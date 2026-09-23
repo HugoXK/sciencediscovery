@@ -17,7 +17,7 @@ const { test } = createTest(import.meta.url, { tags: ["category:ut", "os:linux",
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
-import { access, chmod, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { createServer as createHttpServer, type ServerResponse } from "node:http";
 import { connect, type AddressInfo } from "node:net";
 import { resolve } from "node:path";
@@ -6554,6 +6554,56 @@ test("WSP-003 rejects traversal upload paths and leaves the host untouched", asy
     "outside.txt",
   );
   await assert.rejects(stat(workspaceOutside), { code: "ENOENT" });
+});
+
+test("WSP-004 file endpoints reject symlinks planted in the workspace", async (context) => {
+  const tempRoot = resolve(process.cwd(), ".tmp", `wsp-symlink-${Date.now()}-${process.pid}`);
+  await mkdir(tempRoot, { recursive: true });
+  context.after(() => removeTestRoot(tempRoot));
+  const { origin } = await startTestApi(context, tempRoot);
+  const model = await createTestModel(origin);
+  const project = await jsonRequest<Project>(`${origin}/api/projects`, {
+    body: JSON.stringify({ name: "Symlink escape" }),
+    headers: { ...authorization, "content-type": "application/json" },
+    method: "POST",
+  });
+  const session = await jsonRequest<Session>(`${origin}/api/projects/${project.body.id}/sessions`, {
+    body: JSON.stringify({ modelId: model.id, title: "Symlink escape session" }),
+    headers: { ...authorization, "content-type": "application/json" },
+    method: "POST",
+  });
+  assert.equal(session.response.status, 201);
+  const workspace = resolve(tempRoot, "projects", project.body.id, "sessions", session.body.id, "workspace");
+  await mkdir(resolve(workspace, "nested"), { recursive: true });
+  const secretPath = resolve(tempRoot, "secret.txt");
+  await writeFile(secretPath, "host secret");
+  await writeFile(resolve(workspace, "legit.txt"), "workspace file");
+  // Model code running in the sandbox can plant a symlink whose literal target
+  // lives outside the workspace; the API process must not follow it.
+  await symlink(secretPath, resolve(workspace, "leak.txt"));
+  await symlink(tempRoot, resolve(workspace, "leak-dir"));
+  await symlink(secretPath, resolve(workspace, "nested", "leak.txt"));
+
+  const readLeak = await fetch(`${origin}/api/sessions/${session.body.id}/file?path=leak.txt`, { headers: authorization });
+  assert.equal(readLeak.status, 500);
+  assert.doesNotMatch(await readLeak.text(), /host secret/);
+
+  const readNested = await fetch(
+    `${origin}/api/sessions/${session.body.id}/file?path=${encodeURIComponent("nested/leak.txt")}`,
+    { headers: authorization },
+  );
+  assert.equal(readNested.status, 500);
+
+  const writeLeak = await jsonRequest<{ error?: string }>(
+    `${origin}/api/sessions/${session.body.id}/files`,
+    { body: JSON.stringify({ path: "leak-dir/pwned.txt", content: "owned" }), headers: { ...authorization, "content-type": "application/json" }, method: "POST" },
+  );
+  assert.equal(writeLeak.response.status, 500);
+
+  // A non-symlinked file in the workspace still serves normally.
+  const legit = await fetch(`${origin}/api/sessions/${session.body.id}/file?path=legit.txt`, { headers: authorization });
+  assert.equal(legit.status, 200);
+  assert.equal(await legit.text(), "workspace file");
 });
 
 test("same-named uploads remain physically isolated and append one Project artifact version chain", async (context) => {

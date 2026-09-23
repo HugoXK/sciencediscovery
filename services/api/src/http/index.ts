@@ -50,7 +50,7 @@ import {
   type UpdateModelProviderRequest,
 } from "@sciencediscovery/schema";
 import { createMainAgentProfile, createSubagentProfile, resolveSubagentConfig } from "@sciencediscovery/orchestration";
-import { resolveWorkspaceFile } from "@sciencediscovery/workspace";
+import { assertSafeWorkspaceTarget } from "@sciencediscovery/workspace";
 import { handleEvolveCompletion } from "../evolution/llm-proxy.js";
 import {
   handleGetCandidate as handleEvolveGetCandidate,
@@ -3415,7 +3415,7 @@ export function createApiServer(config = loadServerConfig(), dependencies: ApiSe
       if (filesMatch && request.method === "POST") {
         store.assertSessionWritable(filesMatch[1]!);
         const body = await readJson<UploadFileRequest>(request);
-        const target = resolveWorkspaceFile(store.workspacePath(filesMatch[1]!), body.path ?? "");
+        const target = await assertSafeWorkspaceTarget(store.workspacePath(filesMatch[1]!), body.path ?? "");
         if (Buffer.byteLength(body.content ?? "") > 1_000_000) return sendError(response, 413, "File exceeds 1 MB");
         await withWorkspaceMutation(new VersionStore(store.dataDir), store.workspacePath(filesMatch[1]!), async () => {
           await mkdir(dirname(target), { recursive: true });
@@ -3436,7 +3436,7 @@ export function createApiServer(config = loadServerConfig(), dependencies: ApiSe
       if (fileMatch && request.method === "GET") {
         if (!store.getSession(fileMatch[1]!)) return sendError(response, 404, "Session not found");
         const requestedPath = url.searchParams.get("path") ?? "";
-        const target = resolveWorkspaceFile(store.workspacePath(fileMatch[1]!), requestedPath);
+        const target = await assertSafeWorkspaceTarget(store.workspacePath(fileMatch[1]!), requestedPath);
         send(response, 200, contentTypeForPath(target), await readFile(target));
         return;
       }

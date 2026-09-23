@@ -14,9 +14,9 @@
 
 import { access, lstat, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import type { IncomingMessage } from "node:http";
-import { basename, dirname, extname, relative, resolve, sep } from "node:path";
+import { basename, dirname, extname, resolve } from "node:path";
 
-import { resolveWorkspaceFile } from "@sciencediscovery/workspace";
+import { assertSafeWorkspaceTarget, resolveWorkspaceFile } from "@sciencediscovery/workspace";
 import { sha256, sha256File } from "@sciencediscovery/cas";
 import type { WorkspaceFile } from "@sciencediscovery/schema";
 
@@ -186,33 +186,6 @@ export async function measureWorkspaceBytes(workspaceRoot: string): Promise<numb
   }
   await visit(workspaceRoot);
   return total;
-}
-
-async function assertSafeWorkspaceTarget(workspaceRoot: string, relativePath: string): Promise<string> {
-  const target = resolveWorkspaceFile(workspaceRoot, relativePath);
-  const root = resolve(workspaceRoot);
-  let current = root;
-  const segments = relative(root, target).split(sep).filter(Boolean);
-  for (let index = 0; index < segments.length; index += 1) {
-    current = resolve(current, segments[index]!);
-    let metadata;
-    try {
-      metadata = await lstat(current);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") break;
-      throw error;
-    }
-    if (metadata.isSymbolicLink()) {
-      throw new Error(`Path escapes the workspace through a symbolic link: ${relativePath}`);
-    }
-    if (index < segments.length - 1 && !metadata.isDirectory()) {
-      throw new Error(`Upload path parent is not a directory: ${relativePath}`);
-    }
-    if (index === segments.length - 1 && !metadata.isFile() && !metadata.isDirectory()) {
-      throw new Error(`Refusing to write special device path: ${relativePath}`);
-    }
-  }
-  return target;
 }
 
 export async function allocateUploadPath(
