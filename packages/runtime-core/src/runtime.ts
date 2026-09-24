@@ -241,8 +241,31 @@ export interface AgentLoopResult<TMessage extends RuntimeMessage, TUsage> {
   usage?: TUsage;
 }
 
-export class AgentLoop<TMessage extends RuntimeMessage, TModelInput, TUsage> {
-  private state: AgentLoopState<TMessage> = { history: [], phase: "idle", turn: 0 };
+/** Sum two usage snapshots into one cumulative report (F-12).
+ *
+ * The usage shape is generic at the boundary but in practice is the model
+ * adapter's numeric token accounting (input/output/total and optional cache
+ * fields). Missing/undefined fields stay undefined; anything non-numeric is
+ * left to the newer snapshot so a structural change never crashes the sum. */
+export function accumulateModelUsage<TUsage>(previous: TUsage | undefined, next: TUsage): TUsage {
+  if (previous === undefined) return next;
+  const recordOf = (value: TUsage): Record<string, unknown> | undefined =>
+    typeof value === "object" && value !== null ? value as Record<string, unknown> : undefined;
+  const prior = recordOf(previous);
+  const incoming = recordOf(next);
+  if (!prior || !incoming) return next;
+  const summed: Record<string, unknown> = { ...prior };
+  for (const [key, value] of Object.entries(incoming)) {
+    if (typeof value === "number" && typeof prior[key] === "number") {
+      summed[key] = (prior[key] as number) + value;
+    } else {
+      summed[key] = value;
+    }
+  }
+  return summed as TUsage;
+}
+
+export class AgentLoop<TMessage extends RuntimeMessage, TModelInput, TUsage> {  private state: AgentLoopState<TMessage> = { history: [], phase: "idle", turn: 0 };
   private readonly options: Readonly<AgentLoopOptions<TMessage, TModelInput, TUsage>>;
   private activePhase: AgentLoopPhase = "idle";
 
@@ -312,8 +335,9 @@ export class AgentLoop<TMessage extends RuntimeMessage, TModelInput, TUsage> {
           modelTurn = await this.invokeModel(assembly.modelInput, signal, turn, onProgress);
         }
         if (modelTurn.usage !== undefined) {
-          usage = modelTurn.usage;
-          this.emit({ type: "model_usage", usage });
+          const accumulated = accumulateModelUsage(usage, modelTurn.usage);
+          usage = accumulated;
+          this.emit({ type: "model_usage", usage: accumulated });
         }
         this.raiseForAbort(signal);
         onProgress();

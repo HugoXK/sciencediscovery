@@ -89,6 +89,8 @@ export interface ModelClientPolicy {
   maxRetries: number;
   maxTokens: number;
   requestTimeoutMs: number;
+  /** Wall-clock silence allowed on an open body before the stream is aborted. */
+  bodyStallMs: number;
 }
 
 export class ModelRequestError extends Error {
@@ -128,9 +130,11 @@ export function resolveModelClientPolicy(env: NodeJS.ProcessEnv = process.env): 
   const timeoutRaw = env.SCIENCE_AGENT_LLM_TIMEOUT_SECONDS?.trim();
   const retriesRaw = env.SCIENCE_AGENT_LLM_MAX_RETRIES?.trim();
   const maxTokensRaw = env.SCIENCE_AGENT_LLM_MAX_TOKENS?.trim();
+  const bodyStallRaw = env.SCIENCE_AGENT_LLM_BODY_STALL_SECONDS?.trim();
   const timeoutSeconds = timeoutRaw ? Number(timeoutRaw) : 600;
   const maxRetries = retriesRaw ? Number(retriesRaw) : 2;
   const maxTokens = maxTokensRaw ? Number(maxTokensRaw) : DEFAULT_MODEL_MAX_TOKENS;
+  const bodyStallSeconds = bodyStallRaw ? Number(bodyStallRaw) : 120;
   if (!Number.isFinite(timeoutSeconds) || timeoutSeconds <= 0) {
     throw new Error("SCIENCE_AGENT_LLM_TIMEOUT_SECONDS must be positive");
   }
@@ -144,7 +148,10 @@ export function resolveModelClientPolicy(env: NodeJS.ProcessEnv = process.env): 
   if (!Number.isInteger(maxTokens) || maxTokens <= 0) {
     throw new Error("SCIENCE_AGENT_LLM_MAX_TOKENS must be a positive integer");
   }
-  return { maxRetries, maxTokens, requestTimeoutMs: timeoutSeconds * 1_000 };
+  if (!Number.isFinite(bodyStallSeconds) || bodyStallSeconds <= 0) {
+    throw new Error("SCIENCE_AGENT_LLM_BODY_STALL_SECONDS must be positive");
+  }
+  return { maxRetries, maxTokens, requestTimeoutMs: timeoutSeconds * 1_000, bodyStallMs: bodyStallSeconds * 1_000 };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -247,6 +254,10 @@ async function requestWithRetry(options: RequestOptions): Promise<{ body: AsyncI
   let lastError: Error | undefined;
   for (let attempt = 0; attempt <= options.policy.maxRetries; attempt += 1) {
     if (options.signal.aborted) throw new Error("aborted");
+    // The stall watchdog needs its own abort handle on top of the run signal:
+    // aborting either ends the request (F-11).
+    const stallController = new AbortController();
+    const signal = AbortSignal.any([options.signal, stallController.signal]);
     let statusCode: number;
     let responseBody: AsyncIterable<Uint8Array> & { dump(): Promise<void> };
     let retryAfterMs: number | undefined;
@@ -255,7 +266,7 @@ async function requestWithRetry(options: RequestOptions): Promise<{ body: AsyncI
         method: "POST",
         headers: options.headers,
         body: options.body,
-        signal: options.signal,
+        signal,
         bodyTimeout: 0,
         headersTimeout: options.policy.requestTimeoutMs,
         ...(dispatcher ? { dispatcher } : {}),
@@ -275,7 +286,9 @@ async function requestWithRetry(options: RequestOptions): Promise<{ body: AsyncI
       }
       throw new Error(`Model endpoint is unavailable: ${lastError.message}`);
     }
-    if (statusCode >= 200 && statusCode < 300) return { body: responseBody };
+    if (statusCode >= 200 && statusCode < 300) {
+      return { body: withStallWatchdog(responseBody, options, stallController) };
+    }
     const detail = (await collectBounded(responseBody, 2_000)).trim();
     const failure = new ModelRequestError(
       `Model request failed with status ${statusCode}${detail ? `: ${detail}` : ""}`,
@@ -290,6 +303,50 @@ async function requestWithRetry(options: RequestOptions): Promise<{ body: AsyncI
     throw failure;
   }
   throw lastError ?? new Error("Model request failed");
+}
+
+/**
+ * Watch an open response body for silence. An SSE stream that went half-open
+ * after its headers (the provider stopped sending anything) would otherwise
+ * hold the turn forever: the request has no body timeout and the run-level
+ * abort is the only other interruption. The budget counts time *between*
+ * chunks, so a slow-but-steady stream is unaffected.
+ */
+function withStallWatchdog(
+  body: AsyncIterable<Uint8Array> & { dump(): Promise<void> },
+  options: RequestOptions,
+  stallController: AbortController,
+): AsyncIterable<Uint8Array> & { dump(): Promise<void> } {
+  const stallMs = options.policy.bodyStallMs ?? options.policy.requestTimeoutMs;
+  let lastDataAt = Date.now();
+  const intervalMs = Math.max(1_000, Math.floor(stallMs / 3));
+  const timer = setInterval(() => {
+    if (Date.now() - lastDataAt >= stallMs) {
+      stallController.abort(new Error("Model response body stalled"));
+    }
+  }, intervalMs);
+  timer.unref?.();
+  const stop = () => clearInterval(timer);
+  const watchdog = async function* () {
+    try {
+      for await (const chunk of body) {
+        lastDataAt = Date.now();
+        yield chunk;
+      }
+    } finally {
+      stop();
+    }
+  };
+  const wrapped = watchdog();
+  return {
+    [Symbol.asyncIterator]() {
+      return wrapped[Symbol.asyncIterator]();
+    },
+    async dump() {
+      stop();
+      await body.dump();
+    },
+  };
 }
 
 async function collectBounded(body: AsyncIterable<Uint8Array>, cap: number): Promise<string> {
@@ -309,11 +366,18 @@ async function collectBounded(body: AsyncIterable<Uint8Array>, cap: number): Pro
 async function backoff(attempt: number, retryAfterMs: number | undefined, signal: AbortSignal): Promise<void> {
   const delay = retryAfterMs ?? Math.min(4_000, 500 * 2 ** attempt);
   await new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(resolve, delay);
-    signal.addEventListener("abort", () => {
+    const onAbort = () => {
       clearTimeout(timer);
       reject(new Error("aborted"));
-    }, { once: true });
+    };
+    const timer = setTimeout(() => {
+      // Remove the listener on resolve: an abort listener added for one retry
+      // must not accumulate on a long-lived run signal (F-11).
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, delay);
+    signal.addEventListener("abort", onAbort, { once: true });
+    timer.unref?.();
   });
 }
 

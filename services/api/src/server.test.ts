@@ -1545,7 +1545,8 @@ test("loadServerConfig uses safe local defaults", async (context) => {
   assert.equal(config.gatewayTurnTimeoutMs, 0);
   assert.equal(config.runnerExecTimeoutMs, 0);
   assert.equal(config.kernelIdleTimeoutMs, 0);
-  assert.equal(config.permissionWaitTimeoutMs, 0);
+  // A blocked run waiting for permission must not wait forever (F-U6).
+  assert.equal(config.permissionWaitTimeoutMs, 600_000);
 });
 
 test("loadServerConfig defaults the data directory to the repository data dir", () => {

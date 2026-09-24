@@ -41,6 +41,47 @@ test("durable lifecycle is awaited and a failed commit cannot emit completion", 
   assert.equal(loop.snapshot().phase, "failed");
 });
 
+test("usage accumulates across turns instead of overwriting with the last one", async () => {
+  // Every turn's model call bills against the same session; the run-level usage
+  // must sum the turns, not report only the final call (F-12).
+  interface FullUsage { inputTokens: number; outputTokens: number; totalTokens: number }
+  const events: RunEvent<FullUsage>[] = [];
+  let modelCalls = 0;
+  const loop = new AgentLoop<RuntimeMessage, Input, FullUsage>({
+    maxModelTurns: 2,
+    contextAssembler: { async assemble({ history }) { return { history: [...history], modelInput: { history: [...history] } }; } },
+    modelClient: {
+      async invoke() {
+        modelCalls += 1;
+        if (modelCalls === 1) {
+          return {
+            assistantMessage: { role: "assistant", content: "" },
+            toolCalls: [{ id: "tool-1", name: "probe", args: {} }],
+            usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
+          };
+        }
+        return {
+          assistantMessage: { role: "assistant", content: "done" },
+          toolCalls: [],
+          usage: { inputTokens: 3, outputTokens: 2, totalTokens: 5 },
+        };
+      },
+    },
+    toolDispatcher: {
+      executionMode: () => "parallel",
+      async execute(call) { return { content: "probed", isError: false, message: { role: "tool", name: call.name, content: "probed" } }; },
+    },
+    eventSink: (event) => events.push(event),
+  });
+
+  const result = await loop.run([{ role: "user", content: "go" }], new AbortController().signal, () => undefined);
+  assert.equal(result.turns, 2);
+  assert.deepEqual(result.usage, { inputTokens: 13, outputTokens: 7, totalTokens: 20 });
+  const usageEvents = events.filter((event) => event.type === "model_usage");
+  assert.equal(usageEvents.length, 2);
+  assert.deepEqual((usageEvents.at(-1) as { usage: FullUsage }).usage, { inputTokens: 13, outputTokens: 7, totalTokens: 20 });
+});
+
 test("a failed dispatcher settles sibling workspace writers without committing the turn", async () => {
   let settled = false; let commits = 0;
   const loop = new AgentLoop<RuntimeMessage, Input, never>({

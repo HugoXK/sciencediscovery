@@ -166,7 +166,9 @@ export const DEFAULT_SYSTEM_TIMEOUT_SETTINGS: SystemTimeoutSettings = {
   gatewayIdleTimeoutMs: 240_000,
   gatewayTurnTimeoutMs: 0,
   kernelIdleTimeoutMs: 0,
-  permissionWaitTimeoutMs: 0,
+  // A blocked run waiting for permission must not wait forever on unattended
+  // executions (F-U6); 0 still disables the timeout when explicitly configured.
+  permissionWaitTimeoutMs: 600_000,
   runnerExecTimeoutMs: 0,
 };
 

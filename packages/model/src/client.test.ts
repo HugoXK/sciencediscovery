@@ -48,7 +48,7 @@ test("provider context overflow is normalized without treating arbitrary token e
   assert.equal(isModelInputTooLargeError(new Error("network request failed")), false);
 });
 
-const policy: ModelClientPolicy = { maxRetries: 1, maxTokens: 1_024, requestTimeoutMs: 5_000 };
+const policy: ModelClientPolicy = { maxRetries: 1, maxTokens: 1_024, requestTimeoutMs: 5_000, bodyStallMs: 5_000 };
 
 test("an installed catalog narrows thinking and pricing exactly as the snapshot states", () => {
   installTestModelCatalog();
@@ -370,6 +370,33 @@ test("pre-stream 500 is retried once before succeeding", async () => {
     );
     assert.equal(turn.assistantMessage.content, "ok");
     assert.equal(attempts, 2);
+  });
+});
+
+test("a half-open SSE body is aborted by the stall watchdog", async () => {
+  // The provider sends headers and one event, then goes silent. Without the
+  // watchdog the turn would hang until the run-level abort; with it, the body
+  // stall budget ends the request (F-11).
+  let attempts = 0;
+  const stallPolicy: ModelClientPolicy = { ...policy, maxRetries: 0, requestTimeoutMs: 5_000, bodyStallMs: 300 };
+  await withServer((_request, response) => {
+    attempts += 1;
+    response.writeHead(200, { "content-type": "text/event-stream" });
+    response.write(`data: ${JSON.stringify({ choices: [{ delta: { content: "first " } }] })}\n\n`);
+    // Intentionally never end the response body.
+    void response;
+  }, async (baseUrl) => {
+    await assert.rejects(
+      streamModelTurn(
+        { baseUrl, model: "stub" },
+        "s",
+        [{ role: "user", content: "hi" }],
+        [],
+        stallPolicy,
+        new AbortController().signal,
+      ),
+      /stalled|aborted|unavailable/i,
+    );
   });
 });
 
