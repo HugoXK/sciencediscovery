@@ -110,6 +110,31 @@ test("profiles artifact rows and keeps stable, disambiguated record IDs", () => 
   assert.match(table.warnings[0] ?? "", /duplicate identifiers/);
 });
 
+test("resolves generated row IDs that collide with earlier source IDs", () => {
+  const table = parse("colliding-ids.csv", [
+    "id,value",
+    "A#4,1",
+    "A,2",
+    "A,3",
+  ].join("\n"));
+
+  assert.deepEqual(table.rows.slice(0, 2).map((row) => row.__rowId), ["A#4", "A"]);
+  assert.equal(new Set(table.rows.map((row) => row.__rowId)).size, table.rows.length);
+  assert.match(table.warnings[0] ?? "", /duplicate identifiers/);
+});
+
+test("profiles a large numeric CSV without exhausting the call stack", () => {
+  const rowCount = 130_000;
+  const table = parse("large-numeric.csv", [
+    "value",
+    ...Array.from({ length: rowCount }, (_, index) => String(index)),
+  ].join("\n"));
+
+  assert.equal(table.rows.length, rowCount);
+  assert.equal(table.columns[0]?.min, 0);
+  assert.equal(table.columns[0]?.max, rowCount - 1);
+});
+
 test("profiles common scientific missing-value tokens as null", () => {
   const table = parse("missing.csv", [
     "id,value",
@@ -515,6 +540,33 @@ test("the data table exposes every source field", () => {
   }));
 
   assert.match(html, /field_18/);
+});
+
+test("sizes scatter points from a large mapped numeric column", () => {
+  const seed = parse("sized-scatter.csv", [
+    "id,x,y,size",
+    "r1,0,0,0",
+    "r2,1,1,1",
+  ].join("\n"));
+  const scatter = createDefaultSpecs(seed).find((spec) => spec.type === "scatter");
+  assert.ok(scatter);
+  scatter.mappings.sizeBy = "size";
+  const rowCount = 130_000;
+  const table = {
+    ...seed,
+    rows: Array.from({ length: rowCount }, (_, index) => ({
+      __rowId: String(index),
+      x: index,
+      y: index,
+      size: index,
+    })),
+  };
+
+  const trace = buildFigure(table, scatter).data[0];
+  const sizes = (trace?.marker as { size: number[] }).size;
+  assert.equal(sizes.length, rowCount);
+  assert.equal(sizes[0], scatter.appearance.pointMin);
+  assert.equal(sizes.at(-1), scatter.appearance.pointMax);
 });
 
 test("selected scatter points keep their configured base size", () => {

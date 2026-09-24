@@ -79,13 +79,13 @@ export function parseStructureAtoms(content: string): StructureAtom[] {
   if (content.trim().startsWith("{")) {
     try {
       const parsed = JSON.parse(content) as { atoms?: Array<Partial<StructureAtom>> };
-      return (parsed.atoms ?? []).flatMap((atom) => Number.isFinite(atom.x) && Number.isFinite(atom.y) && Number.isFinite(atom.z)
+      return (parsed.atoms ?? []).flatMap<StructureAtom>((atom) => Number.isFinite(atom.x) && Number.isFinite(atom.y) && Number.isFinite(atom.z)
         ? [{
             element: atom.element?.slice(0, 2) || "C",
             layer: atom.layer === "ligand" || atom.layer === "pocket" ? atom.layer : "protein",
             x: atom.x!, y: atom.y!, z: atom.z!,
           }]
-        : []);
+        : []).slice(0, 8_000);
     } catch {
       return [];
     }

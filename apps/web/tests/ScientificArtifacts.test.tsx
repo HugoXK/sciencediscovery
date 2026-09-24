@@ -238,6 +238,13 @@ test("parses protein, pocket, and ligand layers for the interactive structure vi
   assert.deepEqual(parseStructureAtoms(pdb).map((atom) => atom.layer), ["protein", "pocket", "ligand"]);
 });
 
+test("large JSON atom bags stay within the structure preview budget", () => {
+  const atoms = Array.from({ length: 80_000 }, (_, index) => ({ element: "C", x: index, y: 0, z: 0 }));
+  const parsed = parseStructureAtoms(JSON.stringify({ atoms }));
+  assert.equal(parsed.length, 8_000);
+  assert.deepEqual(parsed.at(-1), { element: "C", layer: "protein", x: 7_999, y: 0, z: 0 });
+});
+
 test("artifact provenance shows parent files and generation info without sub-tabs", () => {
   const provenance: ArtifactVersionProvenance = {
     code: [],

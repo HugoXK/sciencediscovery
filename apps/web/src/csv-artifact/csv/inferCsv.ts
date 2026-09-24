@@ -127,10 +127,13 @@ export function profileRows(
       parsed[field] = parseValue(row[field], kinds.get(field) !== "quantitative");
     }
     const candidate = idField ? String(parsed[idField] ?? "").trim() : "";
-    let rowId = candidate || `row-${index + 2}`;
-    if (seenIds.has(rowId)) {
-      duplicateIds += 1;
-      rowId = `${rowId}#${index + 2}`;
+    const baseRowId = candidate || `row-${index + 2}`;
+    let rowId = baseRowId;
+    if (seenIds.has(rowId)) duplicateIds += 1;
+    let suffix = index + 2;
+    while (seenIds.has(rowId)) {
+      rowId = `${baseRowId}#${suffix}`;
+      suffix += 1;
     }
     seenIds.add(rowId);
     parsed.__rowId = rowId;
@@ -143,14 +146,20 @@ export function profileRows(
     const values = parsedRows.map((row) => row[field]);
     const present = values.filter((value): value is Exclude<DataValue, null> => value !== null);
     const numeric = present.filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+    let min = Number.POSITIVE_INFINITY;
+    let max = Number.NEGATIVE_INFINITY;
+    for (const value of numeric) {
+      min = Math.min(min, value);
+      max = Math.max(max, value);
+    }
     return {
       examples: [...new Set(present.map(String))].slice(0, 3),
       id: field,
       kind: kinds.get(field) ?? "text",
       label: field.replaceAll("_", " "),
       ...(numeric.length ? {
-        max: Math.max(...numeric),
-        min: Math.min(...numeric),
+        max,
+        min,
       } : {}),
       missingCount: values.length - present.length,
       uniqueCount: new Set(present.map(String)).size,

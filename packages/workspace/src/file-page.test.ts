@@ -142,3 +142,52 @@ test("an offset past the end returns an empty page instead of failing", async (c
   assert.equal(page.hasMore, false);
   assert.equal(page.endLine, 49);
 });
+
+test("a newline-free source stops at the byte budget without waiting for EOF", async () => {
+  const { execFile } = await import("node:child_process");
+  const { promisify } = await import("node:util");
+  const source = new URL("./file-page.js", import.meta.url).href;
+  const script = `import { readTextFilePage } from ${JSON.stringify(source)};
+    const page = await readTextFilePage("/dev/zero", { maxBytes: 1_024 });
+    console.log(JSON.stringify({ bytes: page.bytes, length: page.text.length,
+      hasMore: page.hasMore, partialLine: page.partialLine }));`;
+  const { stdout } = await promisify(execFile)(process.execPath,
+    ["--import", "tsx", "--input-type=module", "-e", script],
+    { timeout: 10_000, maxBuffer: 4_096 });
+  assert.deepEqual(JSON.parse(stdout), {
+    bytes: 1_024, length: 1_024, hasMore: true, partialLine: true,
+  });
+});
+
+test("UTF-8 pagination cuts at a code point and can skip the rest of a wide line", async (context) => {
+  const root = await fixtureDirectory(context);
+  const path = resolve(root, "wide-utf8.txt");
+  await writeFile(path, `${"温度".repeat(20_000)}\nnext\n`);
+
+  const first = await readTextFilePage(path, { maxBytes: 4 });
+  assert.equal(first.text, "温");
+  assert.equal(first.bytes, 3);
+  assert.equal(first.partialLine, true);
+  assert.equal(first.hasMore, true);
+  assert.equal(first.nextOffset, 2);
+
+  const second = await readTextFilePage(path, { offset: 2, maxBytes: 8 });
+  assert.equal(second.text, "next\n");
+  assert.equal(second.bytes, 5);
+  assert.equal(second.partialLine, false);
+  assert.equal(second.hasMore, false);
+  assert.equal(second.totalLines, 2);
+});
+
+test("a final line exactly at the byte budget remains complete", async (context) => {
+  const root = await fixtureDirectory(context);
+  const path = resolve(root, "exact-utf8.txt");
+  await writeFile(path, "温");
+
+  const page = await readTextFilePage(path, { maxBytes: 3 });
+  assert.equal(page.text, "温");
+  assert.equal(page.bytes, 3);
+  assert.equal(page.partialLine, false);
+  assert.equal(page.hasMore, false);
+  assert.equal(page.totalLines, 1);
+});

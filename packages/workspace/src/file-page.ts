@@ -161,49 +161,65 @@ export async function readTextFilePage(path: string, options: TextPageOptions = 
   let hasMore = false;
   let partialLine = false;
   let reachedEnd = true;
+  let linePieces: string[] = [];
+  let lineBytes = 0;
+  let unterminatedLine = false;
 
-  /** Returns false when the page is full and reading must stop. */
-  const accept = (line: string): boolean => {
+  /** Keep only the current page budget, even when a line never ends. */
+  const append = (piece: string, endsLine: boolean): boolean => {
     if (kept.length >= maxLines) return false;
-    const size = Buffer.byteLength(line, "utf8");
-    if (bytes + size > maxBytes) {
+    const size = Buffer.byteLength(piece, "utf8");
+    const remaining = maxBytes - bytes - lineBytes;
+    if (size > remaining) {
       if (kept.length > 0) return false;
-      // A single line wider than the page budget still yields a usable head.
-      const head = sliceToBytes(line, maxBytes);
-      kept.push(head);
-      bytes = Buffer.byteLength(head, "utf8");
+      const head = sliceToBytes(piece, remaining);
+      if (head) linePieces.push(head);
+      lineBytes += Buffer.byteLength(head, "utf8");
+      kept.push(linePieces.join(""));
+      bytes += lineBytes;
       partialLine = true;
       return false;
     }
-    kept.push(line);
-    bytes += size;
+    linePieces.push(piece);
+    lineBytes += size;
+    if (endsLine) {
+      kept.push(linePieces.join(""));
+      bytes += lineBytes;
+      linePieces = [];
+      lineBytes = 0;
+    }
     return true;
   };
 
   const stream = createReadStream(path, { encoding: "utf8" });
-  let pending = "";
   try {
     reading: for await (const chunk of stream) {
-      pending += chunk as string;
-      let newline = pending.indexOf("\n");
-      while (newline !== -1) {
-        const line = pending.slice(0, newline + 1);
-        pending = pending.slice(newline + 1);
-        lineNumber += 1;
-        if (lineNumber >= startLine && !accept(line)) {
+      const text = chunk as string;
+      let cursor = 0;
+      while (cursor < text.length) {
+        const newline = text.indexOf("\n", cursor);
+        const endsLine = newline !== -1;
+        const nextCursor = endsLine ? newline + 1 : text.length;
+        const piece = text.slice(cursor, nextCursor);
+        if (lineNumber + 1 >= startLine && !append(piece, endsLine)) {
           hasMore = true;
           reachedEnd = false;
           break reading;
         }
-        newline = pending.indexOf("\n");
+        unterminatedLine = !endsLine;
+        if (endsLine) lineNumber += 1;
+        cursor = nextCursor;
       }
     }
   } finally {
     stream.destroy();
   }
-  if (reachedEnd && pending) {
+  if (reachedEnd && unterminatedLine) {
     lineNumber += 1;
-    if (lineNumber >= startLine && !accept(pending)) hasMore = true;
+    if (lineNumber >= startLine) {
+      kept.push(linePieces.join(""));
+      bytes += lineBytes;
+    }
   }
 
   const endLine = startLine + kept.length - 1;
