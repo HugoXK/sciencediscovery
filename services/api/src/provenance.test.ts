@@ -178,12 +178,14 @@ test("multi-step persistent R executions create separate runs and an artifact de
   assert.equal(await recorder.cas.verify(revision.snapshot.hash), true);
   assert.deepEqual(store.listEnvironments(), [localEnvironment], "remote catalog must not replace local environments");
   runnerClient.environmentSnapshot = async () => Buffer.from("corrupt snapshot");
+  const runsBeforeFailure = await store.listExecutionRuns(session.id);
   await assert.rejects(recorder.executeShell({
     agentId: "main", code: "Rscript analysis.R", environmentId: environment.id, cwd: "analysis",
     permissionEpoch, runnerClient, sessionId: session.id, turnId: "turn-bad-snapshot", workspaceRoot,
   }), /snapshot/i);
-  assert.equal((await store.listExecutionRuns(session.id)).at(-1)?.turnId, "turn-bad-snapshot",
-    "completed execution must still be recorded when environment snapshot synchronization fails");
+  const runsAfterFailure = await store.listExecutionRuns(session.id);
+  assert.equal(runsAfterFailure.length, runsBeforeFailure.length,
+    "a failed environment snapshot synchronization must not commit an execution record, so a retry cannot stack a duplicate succeeded run");
 });
 
 test("shell execution records authoritative code, logs, environment, and generated files", async (context) => {

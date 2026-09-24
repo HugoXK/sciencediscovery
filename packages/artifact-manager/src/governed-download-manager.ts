@@ -136,6 +136,8 @@ export async function assertSafeArtifactPath(root: string, target: string): Prom
 export class GovernedDownloadManager {
   private completedHandler?: (artifact: CompletedArtifact) => Promise<void>;
   private readonly running = new Map<string, AbortController>();
+  /** Single-flight dedup for concurrent job creation against one plan (F-06). */
+  private readonly jobCreation = new Map<string, Promise<ArtifactJob>>();
   private mutationQueue = Promise.resolve();
 
   constructor(
@@ -402,6 +404,24 @@ export class GovernedDownloadManager {
   }
 
   private async createJob(plan: ArtifactPlan, permissionAuthorizationId: string): Promise<ArtifactJob> {
+    // Single-flight guard: concurrent approve()/prepare() calls for the same
+    // plan must produce exactly one job. Without it, check-then-create races
+    // create two jobs that write the same finalPath.
+    const key = `${plan.sessionId}:${plan.id}`;
+    const inFlight = this.jobCreation.get(key);
+    if (inFlight) return inFlight;
+    const created = this.createJobInner(plan, permissionAuthorizationId);
+    this.jobCreation.set(key, created);
+    try {
+      return await created;
+    } finally {
+      this.jobCreation.delete(key);
+    }
+  }
+
+  private async createJobInner(plan: ArtifactPlan, permissionAuthorizationId: string): Promise<ArtifactJob> {
+    const existing = (await this.store.listArtifactJobs(plan.sessionId)).find((job) => job.planId === plan.id);
+    if (existing) return existing;
     const session = this.store.getSession(plan.sessionId);
     if (!session) throw new Error("Session not found");
     const candidate = plan.candidates.find((item) => item.id === plan.selectedCandidateId);
@@ -547,8 +567,17 @@ export class GovernedDownloadManager {
     const workspaceRoot = location.root;
     const operation = () => this.downloadIntoWorkspace(job, plan, candidate, location, signal);
     const completed = await (this.store.mutateWorkspace ? this.store.mutateWorkspace(workspaceRoot, "governed-download", operation, signal) : operation());
-    // Observers may act on terminal jobs; publish that state only after the file/ref commit.
+    // Persist the completed state first, then notify observers. Firing the
+    // handler before the terminal state is durable lets downstream effects run
+    // on a job that a transient persistence failure later marks as failed.
     await this.store.replaceArtifactJob(completed);
+    if (this.completedHandler) {
+      await this.completedHandler({
+        candidate: structuredClone(candidate),
+        job: structuredClone(completed),
+        plan: structuredClone(plan),
+      });
+    }
   }
 
   private async downloadIntoWorkspace(job: ArtifactJob, plan: ArtifactPlan, candidate: ArtifactCandidate,
@@ -562,6 +591,14 @@ export class GovernedDownloadManager {
     await mkdir(dirname(finalPath), { recursive: true });
     await assertSafeArtifactPath(workspaceRoot, finalPath);
     await assertSafeArtifactPath(workspaceRoot, stagingPath);
+    // A previous attempt may have renamed the verified file into place and
+    // then failed to persist the completed job (transient store error). A
+    // naive "destination exists" error would be non-retryable and would fail
+    // the job permanently with the file already on disk. Distinguish that
+    // recovery from a genuine conflict by verifying the existing file: when
+    // its checksum already matches the candidate, resume as completed.
+    const resumed = await this.tryResumeCompleted(job, plan, candidate, finalPath);
+    if (resumed) return resumed;
     try {
       await stat(finalPath);
       throw new ArtifactValidationError("INVALID_INPUT", `Destination already exists: ${plan.destination.path}`);
@@ -625,9 +662,40 @@ export class GovernedDownloadManager {
       throw new ArtifactValidationError("NORMALIZATION_FAILED", "Artifact checksum verification failed");
     }
     await rename(stagingPath, finalPath);
+    return this.completedJob(job, plan, downloaded, totalBytes, actualChecksum);
+  }
+
+  /**
+   * If the destination already holds a file that matches the candidate's
+   * checksum, a previous attempt completed the rename but failed to persist
+   * the terminal state (F-02). Resume the job as completed instead of letting
+   * the retry loop fail it permanently on "Destination already exists".
+   */
+  private async tryResumeCompleted(job: ArtifactJob, plan: ArtifactPlan, candidate: ArtifactCandidate,
+    finalPath: string): Promise<ArtifactJob | undefined> {
+    if (!candidate.checksum) return undefined;
+    let metadata: Awaited<ReturnType<typeof stat>>;
+    try {
+      metadata = await stat(finalPath);
+      if (!metadata.isFile()) return undefined;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw error;
+    }
+    const algorithm = candidate.checksum.algorithm;
+    const hash = createHash(algorithm);
+    for await (const chunk of createReadStream(finalPath)) hash.update(chunk);
+    const actualChecksum = `${algorithm}:${hash.digest("hex")}`;
+    const expectedChecksum = `${candidate.checksum.algorithm}:${candidate.checksum.value.toLowerCase()}`;
+    if (actualChecksum !== expectedChecksum) return undefined;
+    return this.completedJob(job, plan, metadata.size, candidate.expectedBytes, actualChecksum);
+  }
+
+  private async completedJob(job: ArtifactJob, plan: ArtifactPlan, downloaded: number,
+    totalBytes: number | undefined, actualChecksum: string | undefined): Promise<ArtifactJob> {
     const completed: ArtifactJob = {
       ...await this.getJob(job.sessionId, job.id),
-      actualChecksum,
+      ...(actualChecksum ? { actualChecksum } : {}),
       finalPath: plan.destination.path,
       finishedAt: new Date().toISOString(),
       progress: {
@@ -641,13 +709,6 @@ export class GovernedDownloadManager {
       state: "completed",
       updatedAt: new Date().toISOString(),
     };
-    if (this.completedHandler) {
-      await this.completedHandler({
-        candidate: structuredClone(candidate),
-        job: structuredClone(completed),
-        plan: structuredClone(plan),
-      });
-    }
     return completed;
   }
 

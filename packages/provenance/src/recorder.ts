@@ -787,20 +787,22 @@ export class ProvenanceRecorder {
 
     const stdout = await this.cas.put(result.stdout);
     const stderr = await this.cas.put(result.stderr);
-    let environmentSyncError: unknown;
+    // Sync the environment catalog before the execution record is committed.
+    // A sync failure must abort here, before any persistence: otherwise the
+    // tool reports failure while the persisted run claims "succeeded", and a
+    // retry stacks a second succeeded record plus duplicate artifact
+    // derivations for the same files.
     if (options.environmentId) {
-      try {
-        const [environments, revisions] = await Promise.all([
-          options.runnerClient.listEnvironments(), options.runnerClient.listEnvironmentRevisions(),
-        ]);
-        const revision = revisions.find((candidate) => candidate.id === result.environmentRevisionId);
-        if (!revision || revision.environmentId !== options.environmentId) throw new Error("Runner environment identity mismatch");
-        const reference = await this.cas.put(await options.runnerClient.environmentSnapshot(revision.id));
-        if (reference.hash !== revision.snapshot.hash || reference.size !== revision.snapshot.size) {
-          throw new Error("Environment revision snapshot mismatch");
-        }
-        await this.store.replaceScientificEnvironmentCatalog(environments, revisions, options.runnerId);
-      } catch (error) { environmentSyncError = error; }
+      const [environments, revisions] = await Promise.all([
+        options.runnerClient.listEnvironments(), options.runnerClient.listEnvironmentRevisions(),
+      ]);
+      const revision = revisions.find((candidate) => candidate.id === result.environmentRevisionId);
+      if (!revision || revision.environmentId !== options.environmentId) throw new Error("Runner environment identity mismatch");
+      const reference = await this.cas.put(await options.runnerClient.environmentSnapshot(revision.id));
+      if (reference.hash !== revision.snapshot.hash || reference.size !== revision.snapshot.size) {
+        throw new Error("Environment revision snapshot mismatch");
+      }
+      await this.store.replaceScientificEnvironmentCatalog(environments, revisions, options.runnerId);
     }
     await this.store.appendExecutionRun({
       cgroupMode: result.cgroupMode,
@@ -875,7 +877,6 @@ export class ProvenanceRecorder {
       parentSubagentId: options.parentSubagentId,
       inputSourceFiles: shellSourceFileInputs,
     });
-    if (environmentSyncError) throw environmentSyncError;
     return result;
   }
 
@@ -953,24 +954,24 @@ export class ProvenanceRecorder {
 
     const stdout = await this.cas.put(result.stdout);
     const stderr = await this.cas.put(result.stderr);
-    let environmentSyncError: Error | undefined;
-    try {
-      if (result.environmentRevisionId !== DEFAULT_ENVIRONMENT_REVISION_ID) {
-        const [environments, revisions] = await Promise.all([
-          options.runnerClient.listEnvironments(),
-          options.runnerClient.listEnvironmentRevisions(),
-        ]);
-        const revision = revisions.find((candidate) => candidate.id === result.environmentRevisionId);
-        if (!revision) throw new Error(`Runner omitted Environment Revision ${result.environmentRevisionId} from its catalog`);
-        const snapshot = await options.runnerClient.environmentSnapshot(revision.id);
-        const reference = await this.cas.put(snapshot);
-        if (reference.hash !== revision.snapshot.hash || reference.size !== revision.snapshot.size) {
-          throw new Error(`Environment Revision snapshot mismatch: ${revision.id}`);
-        }
-        await this.store.replaceScientificEnvironmentCatalog(environments, revisions, options.runnerId);
+    // Environment catalog sync happens before the execution record is
+    // committed, for the same reason as executeShell: a sync failure aborts
+    // before any persistence so the recorded status can never contradict the
+    // tool's observed failure, and a retry cannot stack duplicate succeeded
+    // runs or duplicate artifact derivations.
+    if (result.environmentRevisionId !== DEFAULT_ENVIRONMENT_REVISION_ID) {
+      const [environments, revisions] = await Promise.all([
+        options.runnerClient.listEnvironments(),
+        options.runnerClient.listEnvironmentRevisions(),
+      ]);
+      const revision = revisions.find((candidate) => candidate.id === result.environmentRevisionId);
+      if (!revision) throw new Error(`Runner omitted Environment Revision ${result.environmentRevisionId} from its catalog`);
+      const snapshot = await options.runnerClient.environmentSnapshot(revision.id);
+      const reference = await this.cas.put(snapshot);
+      if (reference.hash !== revision.snapshot.hash || reference.size !== revision.snapshot.size) {
+        throw new Error(`Environment Revision snapshot mismatch: ${revision.id}`);
       }
-    } catch (error) {
-      environmentSyncError = error instanceof Error ? error : new Error("Environment Revision sync failed");
+      await this.store.replaceScientificEnvironmentCatalog(environments, revisions, options.runnerId);
     }
     await this.store.appendExecutionRun({
       cgroupMode: result.cgroupMode,
@@ -1048,7 +1049,6 @@ export class ProvenanceRecorder {
       parentSubagentId: options.parentSubagentId,
       inputSourceFiles: sourceFileInputs,
     });
-    if (environmentSyncError) throw environmentSyncError;
     return result;
   }
 }

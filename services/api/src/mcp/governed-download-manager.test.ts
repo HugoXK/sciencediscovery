@@ -383,3 +383,177 @@ test("artifact paths reject traversal and an existing symlink parent", async (co
   await assert.rejects(assertSafeArtifactPath(root, resolve(root, "linked", "file.txt")), /symbolic link/);
   await assert.rejects(assertSafeArtifactPath(root, resolve(root, "..", "outside.txt")), /escapes/);
 });
+
+test("governed download manager resumes a job whose completed state failed to persist once", async (context) => {
+  const dataDir = resolve(process.cwd(), ".tmp", `artifact-resume-persist-${Date.now()}-${process.pid}`);
+  await mkdir(dataDir, { recursive: true });
+  context.after(() => rm(dataDir, { force: true, recursive: true }));
+  const store = new SessionStore(dataDir);
+  await store.load();
+  const model = await store.createModel({
+    apiToken: "token", baseUrl: "https://models.example.test/v1", model: "model", name: "Model", vision: false,
+  });
+  const project = await store.createProject("Resume persist");
+  const session = await store.createSession(project.id, "Resume persist", model.id);
+  const registry = createBuiltinMcpSourceRegistry();
+  const gateway = unusedTransport();
+  const broker = new McpGovernanceBroker(
+    dataDir,
+    store,
+    registry,
+    new McpSourceCatalog(registry, gateway),
+    gateway,
+  );
+  const bytes = Buffer.from("%PDF-1.4\nresume-persist artifact\n");
+  const result: McpToolResult = {
+    artifacts: [{
+      attribution: "NCBI",
+      checksum: { algorithm: "sha256", value: createHash("sha256").update(bytes).digest("hex") },
+      expectedBytes: bytes.length,
+      format: "pdf",
+      id: "candidate-1",
+      kind: "paper",
+      license: "public-domain",
+      logicalName: "record.pdf",
+      mimeType: "application/pdf",
+      sourceId: "pubmed",
+      sourceRecordId: "12524541",
+      sourceUrl: "https://eutils.ncbi.nlm.nih.gov/artifacts/record.pdf",
+    }],
+    attribution: "NCBI",
+    license: "public-domain",
+    records: [],
+    retrievedAt: new Date().toISOString(),
+    sourceId: "pubmed",
+    toolId: "search",
+    untrusted: true,
+    warnings: [],
+  };
+  const timestamp = new Date().toISOString();
+  await store.appendMcpInvocation({
+    adapterVersion: "1", attempts: [], attribution: "NCBI",
+    cache: { hit: false, key: "test", scope: "session" }, finishedAt: timestamp,
+    id: "mcp-invocation-1", license: "public-domain",
+    normalizedResult: await broker.cas.put(JSON.stringify(result)),
+    projectId: project.id, request: await broker.cas.put("{}"), resultCount: 0,
+    sessionId: session.id, sourceId: "pubmed", startedAt: timestamp, status: "succeeded",
+    toolCallId: "call-1", toolId: "search", transport: "mcp", turnId: "turn-1",
+  });
+  // Fail the first persistence of a completed job; the retry loop must then
+  // resume from the already-renamed file instead of failing permanently.
+  let failedPersist = false;
+  const flakyStore = new Proxy(store, {
+    get(target, property, receiver) {
+      const value = Reflect.get(target, property, receiver);
+      if (property !== "replaceArtifactJob") return value;
+      return async (job: ArtifactJob) => {
+        if (job.state === "completed" && !failedPersist) {
+          failedPersist = true;
+          throw new Error("transient store failure");
+        }
+        return (value as (...args: unknown[]) => Promise<unknown>).call(target, job);
+      };
+    },
+  });
+  const manager = new GovernedDownloadManager(
+    flakyStore,
+    registry,
+    broker,
+    async () => new Response(bytes, {
+      headers: { "content-length": String(bytes.length) },
+      status: 200,
+    }),
+    1024,
+  );
+
+  const creation = await manager.prepare(session.id, {
+    candidateId: "candidate-1",
+    destination: { path: "downloads/record.pdf", type: "workspace" },
+    mcpInvocationId: "mcp-invocation-1",
+  });
+  const terminalPromise = manager.waitForPlanTerminal(session.id, creation.plan.id);
+  await store.decidePermissionRequest(creation.permissionRequest.id, "allow_once");
+  const [approved] = await manager.approveByPermissionRequest(creation.permissionRequest.id);
+  assert.ok(approved);
+  const terminal = await terminalPromise;
+  const completed = terminal.job ?? await waitForCompleted(store, session.id, approved.job.id);
+
+  assert.equal(failedPersist, true, "the transient persistence failure must actually have been injected");
+  assert.equal(terminal.status, "completed");
+  assert.equal(completed.state, "completed");
+  assert.equal(
+    await readFile(resolve(store.workspacePath(session.id), "downloads/record.pdf"), "utf8"),
+    bytes.toString("utf8"),
+  );
+  const jobs = await store.listArtifactJobs(session.id);
+  assert.equal(jobs.length, 1, "one persisted job must survive the retry");
+  assert.equal(jobs[0]!.state, "completed");
+});
+
+test("governed download manager creates one job when approve is called concurrently", async (context) => {
+  const dataDir = resolve(process.cwd(), ".tmp", `artifact-approve-race-${Date.now()}-${process.pid}`);
+  await mkdir(dataDir, { recursive: true });
+  context.after(() => rm(dataDir, { force: true, recursive: true }));
+  const store = new SessionStore(dataDir);
+  await store.load();
+  const model = await store.createModel({
+    apiToken: "token", baseUrl: "https://models.example.test/v1", model: "model", name: "Model", vision: false,
+  });
+  const project = await store.createProject("Approve race");
+  const session = await store.createSession(project.id, "Approve race", model.id);
+  const registry = createBuiltinMcpSourceRegistry();
+  const gateway = unusedTransport();
+  const broker = new McpGovernanceBroker(
+    dataDir,
+    store,
+    registry,
+    new McpSourceCatalog(registry, gateway),
+    gateway,
+  );
+  const timestamp = new Date().toISOString();
+  const plan: ArtifactPlan = {
+    candidates: [{
+      attribution: "NCBI",
+      format: "pdf",
+      id: "candidate-1",
+      kind: "paper",
+      license: "public-domain",
+      logicalName: "record.pdf",
+      mimeType: "application/pdf",
+      sourceId: "pubmed",
+      sourceRecordId: "record-1",
+      sourceUrl: "https://eutils.ncbi.nlm.nih.gov/artifacts/record.pdf",
+    }],
+    createdAt: timestamp,
+    destination: { path: "downloads/record.pdf", type: "workspace" },
+    id: "plan-race",
+    mcpInvocationId: "invocation-1",
+    permissionAuthorizationId: "authorization-1",
+    permissionRequestId: "",
+    selectedCandidateId: "candidate-1",
+    sessionId: session.id,
+    sourceId: "pubmed",
+    sourceRecordId: "record-1",
+    state: "approved",
+    toolId: "search",
+  };
+  await store.appendArtifactPlan(plan);
+  const manager = new GovernedDownloadManager(
+    store,
+    registry,
+    broker,
+    async () => new Response(Buffer.from("%PDF-1.4\nrace\n"), {
+      headers: { "content-length": "12" },
+      status: 200,
+    }),
+    1024,
+  );
+
+  const [first, second] = await Promise.all([
+    manager.approve(session.id, plan.id),
+    manager.approve(session.id, plan.id),
+  ]);
+  assert.equal(first.job.id, second.job.id, "concurrent approves must deduplicate to one job");
+  const jobs = (await store.listArtifactJobs(session.id)).filter((job) => job.planId === plan.id);
+  assert.equal(jobs.length, 1);
+});
