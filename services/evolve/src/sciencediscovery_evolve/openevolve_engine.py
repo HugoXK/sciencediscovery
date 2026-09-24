@@ -435,7 +435,10 @@ class _Reporter:
 
     def on_event(self, kind: str, payload: Dict[str, Any]) -> None:
         if kind == "selected":
-            self.attempted += 1
+            # Shared by every worker thread; keep the increment under the lock
+            # so concurrent selections cannot lose updates (F-09).
+            with self._lock:
+                self.attempted += 1
             iteration = payload["iteration"]
             inspiration_id = payload.get("inspiration_id")
             inspiration_iteration: Optional[int] = None

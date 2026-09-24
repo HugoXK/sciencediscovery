@@ -85,6 +85,21 @@ def test_an_unknown_engine_is_refused(client: TestClient) -> None:
     assert response.json()["detail"]["code"] == "unknown_engine"
 
 
+def test_a_path_traversal_search_id_is_refused(client: TestClient) -> None:
+    """search_id becomes a directory name; `..` would write candidates outside
+    the store root, so it must be rejected before any run starts (F-19)."""
+    for search_id in ["..", "../escape", "a/b", "run/../../x", "a\\b", "run\x00x"]:
+        response = client.post("/runs", json={
+            "search_id": search_id, "scorecard_hash": "sha256:card", "expansions": 1,
+        })
+        assert response.status_code == 422, f"expected 422 for search_id {search_id!r}"
+    # A plain token keeps working.
+    response = client.post("/runs", json={
+        "search_id": "run-valid_1.x", "scorecard_hash": "sha256:card", "expansions": 1,
+    })
+    assert response.status_code == 200
+
+
 def test_stopping_an_unknown_search_is_not_an_error(client: TestClient) -> None:
     """The API races the stream's own completion, so this must be idempotent."""
     response = client.post("/runs/never-started/stop")

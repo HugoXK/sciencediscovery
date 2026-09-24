@@ -259,14 +259,32 @@ def _frozen_files(pristine: Path, frozen: Sequence[str]) -> Set[Path]:
     the pattern the design itself gives as the example and `pathlib` matches
     only the *directory* with it. Read literally, the documented way to freeze a
     test suite would freeze nothing — and nothing about the run would say so.
+
+    Patterns come from the scorecard (model-influenced configuration), so a
+    `..`-traversing or absolute pattern must not copy host files into the
+    evaluation scratch (F-21): every match is re-checked to stay under the
+    pristine workspace root.
     """
     files: Set[Path] = set()
+    pristine_root = pristine.resolve()
     for pattern in frozen:
         for match in pristine.glob(pattern):
+            resolved = match.resolve()
+            if resolved != pristine_root and not resolved.is_relative_to(pristine_root):
+                raise TestGateError(
+                    f"frozen pattern escapes the workspace: {pattern!r} matched {match}"
+                )
             if match.is_file():
                 files.add(match)
             elif match.is_dir():
-                files.update(path for path in match.rglob("*") if path.is_file())
+                for path in match.rglob("*"):
+                    resolved_child = path.resolve()
+                    if resolved_child != pristine_root and not resolved_child.is_relative_to(pristine_root):
+                        raise TestGateError(
+                            f"frozen pattern escapes the workspace: {pattern!r} matched {path}"
+                        )
+                    if path.is_file():
+                        files.add(path)
     return files
 
 

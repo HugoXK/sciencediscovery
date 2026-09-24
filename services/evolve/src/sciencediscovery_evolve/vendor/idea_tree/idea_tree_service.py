@@ -21,7 +21,10 @@ from .idea_tree import IdeaTree, IdeaTreeError, digest, now, require, text
 class IdeaTreeStore:
     def __init__(self, root: Path):
         self.root = root
-        self._locks: dict[tuple[str, str], threading.Lock] = {}
+        #: One lock per (project, session) scope, refcounted so a scope's lock
+        #: is released (and the entry removed) once no caller needs it — an
+        #: unbounded dict would leak a lock per session forever (F-10).
+        self._locks: dict[tuple[str, str], tuple[threading.Lock, int]] = {}
         self._guard = threading.Lock()
 
     def _save(self, path: Path, state: dict[str, Any]) -> None:
@@ -42,29 +45,43 @@ class IdeaTreeStore:
         for identifier in (project, session):
             require(bool(re.fullmatch(r"[A-Za-z0-9_-]{1,160}", identifier)), "INVALID_ARGUMENT", "Invalid session scope")
         with self._guard:
-            lock = self._locks.setdefault((project, session), threading.Lock())
-        with lock:
-            path = self.root / project / session / "state.json"
-            try:
-                state = json.loads(path.read_text()) if path.exists() else dict(version=1, trees={}, creates={})
-                require(state.get("version") == 1, "STORAGE_ERROR", "Unsupported Idea Tree file format")
-                before = copy.deepcopy(state)
-                trees = {key: IdeaTree(value) for key, value in state["trees"].items()}
-                # A crashed owner becomes retryable once its lease expires. The API
-                # explicitly abandons its own execution on ordinary completion/cancel.
-                recovered = 0
-                for tree in trees.values():
-                    execution = tree.active()
-                    if execution and datetime.fromisoformat(execution["leaseExpiresAt"]) <= datetime.fromisoformat(now()):
-                        tree.fail_execution(execution, True, dict(reasonCode="lease_expired", message="Execution owner lease expired"))
-                        recovered += 1
-                result = self._dispatch(trees, state, operation, copy.deepcopy(params), owner, settings or {}, fingerprint, recovered)
-                state["trees"] = {key: tree.dump() for key, tree in trees.items()}
-                if state != before:
-                    self._save(path, state)
-                return copy.deepcopy(result)
-            except (OSError, json.JSONDecodeError) as error:
-                raise IdeaTreeError("STORAGE_ERROR", f"Idea Tree storage failed: {error}") from error
+            entry = self._locks.get((project, session))
+            if entry is None:
+                entry = (threading.Lock(), 1)
+                self._locks[(project, session)] = entry
+            else:
+                self._locks[(project, session)] = (entry[0], entry[1] + 1)
+        lock = entry[0]
+        try:
+            with lock:
+                path = self.root / project / session / "state.json"
+                try:
+                    state = json.loads(path.read_text()) if path.exists() else dict(version=1, trees={}, creates={})
+                    require(state.get("version") == 1, "STORAGE_ERROR", "Unsupported Idea Tree file format")
+                    before = copy.deepcopy(state)
+                    trees = {key: IdeaTree(value) for key, value in state["trees"].items()}
+                    # A crashed owner becomes retryable once its lease expires. The API
+                    # explicitly abandons its own execution on ordinary completion/cancel.
+                    recovered = 0
+                    for tree in trees.values():
+                        execution = tree.active()
+                        if execution and datetime.fromisoformat(execution["leaseExpiresAt"]) <= datetime.fromisoformat(now()):
+                            tree.fail_execution(execution, True, dict(reasonCode="lease_expired", message="Execution owner lease expired"))
+                            recovered += 1
+                    result = self._dispatch(trees, state, operation, copy.deepcopy(params), owner, settings or {}, fingerprint, recovered)
+                    state["trees"] = {key: tree.dump() for key, tree in trees.items()}
+                    if state != before:
+                        self._save(path, state)
+                    return copy.deepcopy(result)
+                except (OSError, json.JSONDecodeError) as error:
+                    raise IdeaTreeError("STORAGE_ERROR", f"Idea Tree storage failed: {error}") from error
+        finally:
+            with self._guard:
+                current = self._locks[(project, session)]
+                if current[1] <= 1:
+                    del self._locks[(project, session)]
+                else:
+                    self._locks[(project, session)] = (current[0], current[1] - 1)
 
     def _dispatch(self, trees: dict[str, IdeaTree], state: dict[str, Any], operation: str,
                   params: dict[str, Any], owner: str, settings: dict[str, Any], fingerprint: str | None, recovered: int) -> Any:

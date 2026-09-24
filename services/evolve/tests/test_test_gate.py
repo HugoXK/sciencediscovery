@@ -103,6 +103,16 @@ def test_a_candidate_that_deletes_a_test_file_finds_it_back(tmp_path: Path) -> N
     assert (scratch / "tests" / "test_solver.py").exists()
 
 
+def test_a_frozen_pattern_escaping_the_workspace_is_refused(tmp_path: Path) -> None:
+    # Frozen patterns come from the scorecard, which the model can influence;
+    # `..`-traversing or absolute patterns must not copy host files into the
+    # evaluation scratch (F-21).
+    pristine = project(tmp_path)
+    (tmp_path / "host-secret.py").write_text("SECRET = 1\n", encoding="utf-8")
+    with pytest.raises(TestGateError, match="escapes the workspace"):
+        _restore_frozen(pristine, tmp_path / "work", ("../host-secret.py",))
+
+
 def test_a_card_with_nothing_frozen_is_refused(tmp_path: Path) -> None:
     # Upstream's own note: without it the shortest path to a high score is to
     # weaken the thing measuring it.

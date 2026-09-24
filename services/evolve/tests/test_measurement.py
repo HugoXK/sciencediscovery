@@ -127,6 +127,30 @@ def test_a_dataset_missing_gate_shards_is_refused(tmp_path: Path) -> None:
     assert GATE in str(error.value)
 
 
+def test_a_manifest_path_escaping_the_dataset_root_is_refused(tmp_path: Path) -> None:
+    # A tampered manifest can point train/test/truth outside the staged dataset
+    # root; candidates must not read host files through it (F-22).
+    root = tmp_path / "dataset"
+    root.mkdir(parents=True, exist_ok=True)
+    (tmp_path / "host-secret.json").write_text("[42]", encoding="utf-8")
+    manifest = {
+        "schemaVersion": 1,
+        "criteria": {
+            "f1": {
+                "shards": [{
+                    "index": 0, "role": ROLLOUT,
+                    "train": "../host-secret.json", "test": "../host-secret.json",
+                    "truth": "../host-secret.json",
+                }],
+            },
+        },
+    }
+    (root / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(DatasetError) as error:
+        load_dataset(str(root), {"criteria": [criterion("f1", "accuracy")]})
+    assert "escapes the dataset root" in str(error.value)
+
+
 def test_a_seconds_criterion_needs_no_dataset_of_its_own() -> None:
     # This is what makes a "training time < 300s" veto expressible: a constraint
     # refers to a criterion, and a criterion needs something to measure.

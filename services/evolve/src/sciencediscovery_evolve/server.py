@@ -45,7 +45,7 @@ from typing import Any, Iterator
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from . import events
 from .auth import require_internal_token
@@ -89,6 +89,10 @@ _ALGORITHMS = {"puct", "era", "openevolve"}
 
 #: Bounded so a slow reader blocks the engine rather than growing memory.
 _QUEUE_DEPTH = 1024
+#: How long the engine thread waits to enqueue an event before checking whether
+#: the client has disconnected. Without this a full queue plus a dead reader
+#: would block the worker forever (F-07).
+_QUEUE_PUT_TIMEOUT_SECONDS = 1.0
 #: How long the stream waits for the engine thread after the client goes away.
 _SHUTDOWN_TIMEOUT_SECONDS = 5.0
 
@@ -113,8 +117,18 @@ _running_lock = threading.Lock()
 
 
 class RunRequest(BaseModel):
-    search_id: str = Field(min_length=1, max_length=200)
+    #: search_id becomes a directory name under the candidate store, so it must
+    #: be a plain token: otherwise `..` (or a path separator) escapes the store
+    #: root and writes candidates outside it (F-19).
+    search_id: str = Field(min_length=1, max_length=200, pattern=r"^[A-Za-z0-9._-]+$")
     algorithm: str = "puct"
+
+    @field_validator("search_id")
+    @classmethod
+    def search_id_not_traversal(cls, value: str) -> str:
+        if value in {".", ".."}:
+            raise ValueError("search_id must not be a directory traversal name")
+        return value
     expansions: int = Field(default=6, ge=1, le=10_000)
     scorecard_hash: str = Field(min_length=1, max_length=200)
     #: The frozen scorecard body. Absent for engines that grade nothing.
@@ -318,7 +332,18 @@ def _run_events(
     failure: list[BaseException] = []
 
     def emit(event: dict[str, Any]) -> None:
-        queue.put(stream.record(event))
+        # A bounded queue gives backpressure, but queue.put blocks forever
+        # when it is full and the reader has gone away. Put with a timeout so
+        # a disconnect (which sets the stop flag) can interrupt a worker stuck
+        # on a full queue instead of leaving it as a daemon zombie.
+        while True:
+            try:
+                queue.put(stream.record(event), timeout=_QUEUE_PUT_TIMEOUT_SECONDS)
+                return
+            except Full:
+                if stop.is_set():
+                    return
+                continue
 
     def drive() -> None:
         try:
@@ -327,7 +352,7 @@ def _run_events(
             failure.append(exc)
             log.exception("run %s engine failed", spec.search_id)
         finally:
-            queue.put(None)
+            queue.put_nowait(None)
 
     worker = threading.Thread(target=drive, name=f"evolve-{spec.search_id}", daemon=True)
     worker.start()
@@ -352,9 +377,21 @@ def _run_events(
             yield stream.record(events.search_finished("failed", None, 0))
     finally:
         stop.set()
+        # Wake any worker still blocked on a full queue so it observes the
+        # stop flag and exits promptly.
+        try:
+            queue.put_nowait(None)
+        except Full:
+            pass
         worker.join(timeout=_SHUTDOWN_TIMEOUT_SECONDS)
         with _running_lock:
-            _running.pop(spec.search_id, None)
+            if worker.is_alive():
+                # The engine is still tearing down; keep the entry so a second
+                # /runs for the same search_id is not accepted while the first
+                # thread is still writing the same ledger.
+                log.warning("run %s engine did not stop within the shutdown timeout", spec.search_id)
+            else:
+                _running.pop(spec.search_id, None)
 
 
 def main() -> None:

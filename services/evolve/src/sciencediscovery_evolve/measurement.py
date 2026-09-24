@@ -219,12 +219,22 @@ def _metric_name(criterion: Mapping[str, Any]) -> str:
 
 
 def _shards(base: Path, entry: Mapping[str, Any]) -> Tuple[Shard, ...]:
+    base_resolved = base.resolve()
+
+    def _contained(path: Path, label: str) -> Path:
+        resolved = path.resolve()
+        if resolved != base_resolved and not resolved.is_relative_to(base_resolved):
+            raise DatasetError(
+                f"{label} escapes the dataset root: {path}"
+            )
+        return path
+
     shards: List[Shard] = []
     for raw in entry.get("shards") or []:
         role = str(raw.get("role"))
         if role not in (ROLLOUT, GATE, TEST):
             raise DatasetError(f"unknown shard role {role!r}")
-        truth_path = base / str(raw["truth"])
+        truth_path = _contained(base / str(raw["truth"]), "truth")
         try:
             truth = tuple(float(value) for value in json.loads(truth_path.read_text(encoding="utf-8")))
         except (OSError, json.JSONDecodeError, TypeError, ValueError) as error:
@@ -234,8 +244,8 @@ def _shards(base: Path, entry: Mapping[str, Any]) -> Tuple[Shard, ...]:
         shards.append(Shard(
             index=int(raw.get("index", len(shards))),
             role=role,
-            train=base / str(raw["train"]),
-            test=base / str(raw["test"]),
+            train=_contained(base / str(raw["train"]), "train"),
+            test=_contained(base / str(raw["test"]), "test"),
             truth=truth,
         ))
     return tuple(shards)

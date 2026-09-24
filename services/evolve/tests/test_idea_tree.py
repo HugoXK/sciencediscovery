@@ -143,3 +143,14 @@ def test_lease_comparison_handles_microseconds_at_millisecond_boundary(api, monk
     assert result(api, tree, request)["handle"]
     monkeypatch.setattr(idea_tree_service, "now", lambda: "2026-09-10T12:00:00.124Z")
     assert api("recover")["recoveredExecutions"] == 1
+
+
+def test_per_session_locks_are_released_after_use(api):
+    """The lock table must not grow one entry per (project, session) forever:
+    an entry created for a call has to disappear once that call completes (F-10)."""
+    store = IdeaTreeStore(api.root)
+    store.call("project", "session", "readGraph", dict(treeId="missing"))
+    assert store._locks == {}, "completed calls must release their scope lock"
+    # Concurrent calls for the same scope share one lock and still release it.
+    store.call("project", "session", "readGraph", dict(treeId="missing"))
+    assert store._locks == {}

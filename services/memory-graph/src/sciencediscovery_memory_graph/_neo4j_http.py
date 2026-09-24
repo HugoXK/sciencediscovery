@@ -32,9 +32,12 @@ in ``query.py`` fall through to ``str(value)`` and pass them through.
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Iterator
 
 import httpx
+
+logger = logging.getLogger("sciencediscovery_memory_graph.http")
 
 
 class _HttpRecord:
@@ -219,10 +222,11 @@ class _HttpSession:
         self._closed = True
         url = self._commit_url if exc_type is None else self._tx_path + "/rollback"
         try:
-            self._client.post(url, json={"statements": []}, auth=self._auth, timeout=60.0)
-        except Exception:
-            # Best-effort commit/rollback: never raise from __exit__.
-            # A failed commit surfaces as a subsequent read mismatch, which
-            # the lazy-degrade contract already tolerates (is_reachable flips
-            # False on the next probe).
-            pass
+            response = self._client.post(url, json={"statements": []}, auth=self._auth, timeout=60.0)
+            response.raise_for_status()
+        except Exception as error:  # noqa: BLE001 - __exit__ must not raise
+            # A failed commit means the write never reached the graph while the
+            # caller was told it succeeded. Surface it instead of swallowing it
+            # silently, so operators can tell "healthy but not persisted" apart
+            # from an actually applied change.
+            logger.warning("neo4j %s failed: %s", "commit" if exc_type is None else "rollback", error)

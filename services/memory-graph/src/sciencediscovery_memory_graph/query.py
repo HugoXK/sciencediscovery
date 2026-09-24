@@ -307,7 +307,12 @@ def get_web_page_content_hash(
             "WHERE NOT coalesce(w.deleted_session, false) "
             "RETURN w.content_hash AS hash"
         )
-    rec = driver.session().run(cypher, sid=session_id, key=key).single()
+    # Use the session as a context manager: _HttpSession opens a server-side
+    # transaction at construction, so leaving the `with` block is what commits
+    # (or rolls back) it. A bare `.run` would leak the transaction until the
+    # server's timeout reaps it.
+    with driver.session() as session:
+        rec = session.run(cypher, sid=session_id, key=key).single()
     return (rec["hash"] if rec else None), None
 
 

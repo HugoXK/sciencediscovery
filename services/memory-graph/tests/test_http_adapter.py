@@ -25,6 +25,7 @@ the session as the tx object.
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 import httpx
@@ -196,3 +197,26 @@ def test_execute_write_runs_unit_once_with_session_as_tx() -> None:
         # The tx passed to the unit IS the session itself.
         assert seen[0] is s
         assert result["added"] == 3
+
+
+def test_session_commit_failure_is_logged_not_swallowed(caplog: pytest.LogCaptureFixture) -> None:
+    state = {"phase": "open"}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/db/neo4j/tx" and state["phase"] == "open":
+            state["phase"] = "open_done"
+            return httpx.Response(200, json=_tx_open_resp())
+        if path == "/db/neo4j/tx/0" and state["phase"] == "open_done":
+            return httpx.Response(200, json=_stmt_resp(["ok"], [[1]]))
+        if path == "/db/neo4j/tx/0/commit":
+            # A commit that never lands: the write is lost but __exit__ must
+            # not raise; it must surface the failure through the logger.
+            return httpx.Response(503, json={"results": [], "errors": []})
+        return httpx.Response(404)
+
+    client, _ = _mock_neo4j(handler)
+    with caplog.at_level(logging.WARNING, logger="sciencediscovery_memory_graph.http"):
+        with _HttpSession(client, base_url="http://neo4j.test", auth=("u", "p")) as s:
+            s.run("MERGE (n) SET n.x = 1")
+    assert any("neo4j commit failed" in message for message in caplog.messages)
