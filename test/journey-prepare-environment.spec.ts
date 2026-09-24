@@ -54,7 +54,7 @@ test.describe("journey-prepare-environment.spec", { tag: ["@category:e2e", "@os:
  * CostSideEffects: no external cost; creates and deletes one local named environment plus temporary model/Project records.
  */
 test("J3 准备命名环境后让 Agent 使用并留下溯源", { tag: "@mocked" }, async ({ journey, page }, testInfo) => {
-  test.setTimeout(240_000);
+  test.setTimeout(360_000);
   journey.scenario({
     goal: "一位研究员不想在共享的基础环境里乱动东西，要给自己的分析准备一个独立的命名计算环境，"
       + "让后续计算真的跑在上面，事后还能核对「刚才那次计算用的就是我建的环境」，用完再删掉。",
@@ -73,7 +73,12 @@ test("J3 准备命名环境后让 Agent 使用并留下溯源", { tag: "@mocked"
     "确认托管 Python 已就绪，并打开本机 Runner 的科学环境页",
     "系统设置的 Runner 目录里选本机，科学环境页签显示托管 Python 已经 Ready；base 没就绪时这条旅程应当被判为前置未满足。",
     async () => {
-      const setup = await environmentSetup(page);
+      let setup = await environmentSetup(page);
+      const setupDeadline = Date.now() + 120_000;
+      while (setup.state === "installing" && Date.now() < setupDeadline) {
+        await new Promise((resolve) => setTimeout(resolve, 1_000));
+        setup = await environmentSetup(page);
+      }
       expect(setup.state,
         `BLOCKED: managed Python base is not ready (${setup.state}: ${setup.message})`,
       ).toBe("ready");
