@@ -68,6 +68,8 @@ export function toolOutputStoreRoot(dataDir: string, sessionId: string): string 
 
 /** Sidecar metadata; the output itself lives beside it in `<ref>.txt`. */
 interface StoredMeta {
+  /** Precomputed Unicode code-point count, so character pagination never rescans the text. */
+  totalChars: number;
   createdAt: string;
   toolName: string;
 }
@@ -236,7 +238,9 @@ export class ToolOutputStore implements ToolOutputSink {
   }
 
   async save(toolName: string, text: string): Promise<ToolOutputRecord> {
-    const stored: StoredOutput = { createdAt: new Date().toISOString(), text, toolName };
+    let totalChars = 0;
+    for (const _character of text) totalChars += 1;
+    const stored: StoredOutput = { createdAt: new Date().toISOString(), text, toolName, totalChars };
     const ref = `tool-output-${randomBytes(8).toString("hex")}`;
     this.memory.set(ref, stored);
     await this.persist(ref, stored);
@@ -282,20 +286,20 @@ export class ToolOutputStore implements ToolOutputSink {
     options: { charLimit?: number; charOffset?: number } = {},
   ): Promise<ToolOutputCharacterPage> {
     const stored = await this.resolveStored(ref);
-    let totalChars = 0;
-    for (const _character of stored.text) totalChars += 1;
+    // The code-point count is precomputed at save time, so pagination never
+    // rescans the full text; the page loop below stops as soon as its byte or
+    // character budget is reached instead of scanning the whole remainder.
+    const totalChars = stored.totalChars;
     const startChar = Math.min(totalChars, Math.max(0, Math.trunc(options.charOffset ?? 0)));
     const requestedLimit = Math.max(1, Math.trunc(options.charLimit ?? DEFAULT_READ_PAGE_MAX_BYTES));
     const pageCharacters: string[] = [];
     let characterIndex = 0;
     let pageBytes = 0;
     for (const character of stored.text) {
-      if (characterIndex >= startChar && pageCharacters.length < requestedLimit) {
+      if (characterIndex >= startChar) {
+        if (pageCharacters.length >= requestedLimit) break;
         const characterBytes = Buffer.byteLength(character, "utf8");
-        if (pageBytes + characterBytes > DEFAULT_READ_PAGE_MAX_BYTES) {
-          characterIndex += 1;
-          break;
-        }
+        if (pageBytes + characterBytes > DEFAULT_READ_PAGE_MAX_BYTES) break;
         pageCharacters.push(character);
         pageBytes += characterBytes;
       }
@@ -330,16 +334,30 @@ export class ToolOutputStore implements ToolOutputSink {
     const caseSensitive = options.caseSensitive === true;
     const contextChars = Math.max(0, Math.trunc(options.contextChars ?? 500));
     const maxMatches = Math.max(1, Math.trunc(options.maxMatches ?? 5));
-    const searchable = caseSensitive ? stored.text : stored.text.toLocaleLowerCase();
+    // Case folding can change code-point counts (e.g. "İ" → "i̇"), so a
+    // lowercased copy's offsets do not align with the original text. Fold each
+    // code point individually and record the original index every folded unit
+    // came from; searches then resolve folded offsets back to the source text.
+    const { folded, origin } = caseSensitive
+      ? foldSearchable(stored.text)
+      : foldSearchable(stored.text, true);
     const needle = caseSensitive ? normalizedQuery : normalizedQuery.toLocaleLowerCase();
     const candidates: Array<{ end: number; start: number }> = [];
     let totalMatches = 0;
     let from = 0;
-    while (from <= searchable.length - needle.length) {
-      const start = searchable.indexOf(needle, from);
+    while (from <= folded.length - needle.length) {
+      const start = folded.indexOf(needle, from);
       if (start < 0) break;
       totalMatches += 1;
-      if (candidates.length < maxMatches) candidates.push({ start, end: start + needle.length });
+      if (candidates.length < maxMatches) {
+        const startUnit = safeCodeUnitBoundary(stored.text, origin[start] ?? 0, "forward");
+        const endUnit = safeCodeUnitBoundary(
+          stored.text,
+          Math.min(stored.text.length, (origin[start + needle.length] ?? stored.text.length)),
+          "backward",
+        );
+        candidates.push({ end: endUnit, start: startUnit });
+      }
       from = Math.max(start + needle.length, start + 1);
     }
     const matches: ToolOutputSearchMatch[] = [];
@@ -398,7 +416,7 @@ export class ToolOutputStore implements ToolOutputSink {
     await mkdir(this.root, { recursive: true });
     const textPath = resolve(this.root, `${ref}.txt`);
     const metaPath = resolve(this.root, `${ref}.json`);
-    const meta: StoredMeta = { createdAt: stored.createdAt, toolName: stored.toolName };
+    const meta: StoredMeta = { createdAt: stored.createdAt, toolName: stored.toolName, totalChars: stored.totalChars };
     await writeFile(`${textPath}.${process.pid}.tmp`, stored.text, { encoding: "utf8", mode: 0o600 });
     await writeFile(`${metaPath}.${process.pid}.tmp`, JSON.stringify(meta), { encoding: "utf8", mode: 0o600 });
     await rename(`${textPath}.${process.pid}.tmp`, textPath);
@@ -408,10 +426,17 @@ export class ToolOutputStore implements ToolOutputSink {
   private async load(ref: string): Promise<StoredOutput | undefined> {
     if (!this.root) return undefined;
     try {
-      const meta = JSON.parse(await readFile(resolve(this.root, `${ref}.json`), "utf8")) as StoredMeta;
+      const meta = JSON.parse(await readFile(resolve(this.root, `${ref}.json`), "utf8")) as Partial<StoredMeta>;
       const text = await readFile(resolve(this.root, `${ref}.txt`), "utf8");
       if (typeof meta?.toolName !== "string") return undefined;
-      const stored: StoredOutput = { createdAt: meta.createdAt, text, toolName: meta.toolName };
+      let totalChars = meta.totalChars;
+      if (typeof totalChars !== "number") {
+        // Records written before the count was persisted: compute it once here
+        // so in-memory pagination still avoids rescanning on every page read.
+        totalChars = 0;
+        for (const _character of text) totalChars += 1;
+      }
+      const stored: StoredOutput = { createdAt: meta.createdAt ?? "", text, toolName: meta.toolName, totalChars };
       this.memory.set(ref, stored);
       return stored;
     } catch {
@@ -433,6 +458,39 @@ function countCodePoints(text: string, endUnit: number = text.length): number {
   let count = 0;
   for (const _character of text.slice(0, endUnit)) count += 1;
   return count;
+}
+
+/**
+ * Build a case-folded copy of `text` together with, for every UTF-16 unit of
+ * the folded result, the UTF-16 index in the original it came from. Folding
+ * can change the code-point count (e.g. "İ" folds to "i̇"), so an offset into
+ * the folded string cannot be applied to the original directly; `origin`
+ * restores the alignment.
+ */
+function foldSearchable(text: string, lowercase = false): { folded: string; origin: number[] } {
+  const parts: string[] = [];
+  const origin: number[] = [];
+  for (const character of text) {
+    const foldedCharacter = lowercase ? character.toLocaleLowerCase() : character;
+    if (foldedCharacter.length === 1) {
+      parts.push(foldedCharacter);
+      origin.push(character.length);
+      continue;
+    }
+    // Multi-unit fold: record the original span for each output unit so a
+    // match spanning one is never anchored inside the folded result.
+    for (let unit = 0; unit < foldedCharacter.length; unit += 1) origin.push(character.length);
+    parts.push(foldedCharacter);
+  }
+  // `origin[i]` currently holds each unit's span; convert to a cumulative map
+  // so `origin[i]` is the original index of folded position `i`.
+  let cumulative = 0;
+  for (let index = 0; index < origin.length; index += 1) {
+    const span = origin[index]!;
+    origin[index] = cumulative;
+    cumulative += span;
+  }
+  return { folded: parts.join(""), origin };
 }
 
 const readToolOutputParameters = Type.Object({

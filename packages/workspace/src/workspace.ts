@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { mkdir, readdir, realpath, stat } from "node:fs/promises";
+import { lstat, mkdir, readdir, realpath, stat } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 
@@ -529,15 +529,21 @@ export async function scanWorkspaceWithStatus(workspaceRoot: string): Promise<Wo
   await mkdir(workspaceRoot, { recursive: true });
   const files: WorkspaceFileInfo[] = [];
 
-  async function visit(directory: string): Promise<void> {
-    if (files.length > MAX_WORKSPACE_SCAN_FILES) return;
+  // Explicit stack instead of recursion: directory trees of arbitrary depth
+  // must not risk exhausting the call stack. Files are still visited in the
+  // same ascending order as the recursive walk; directories go onto the stack
+  // and are pushed in reverse so the pop order preserves depth-first order.
+  const pending: string[] = [resolve(workspaceRoot)];
+  while (pending.length && files.length <= MAX_WORKSPACE_SCAN_FILES) {
+    const directory = pending.pop()!;
     const entries = await readdir(directory, { withFileTypes: true });
+    const subdirectories: string[] = [];
     for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
       if (files.length > MAX_WORKSPACE_SCAN_FILES) break;
       const fullPath = resolve(directory, entry.name);
       if (entry.isSymbolicLink()) continue;
       if (entry.isDirectory()) {
-        await visit(fullPath);
+        subdirectories.push(fullPath);
         continue;
       }
       if (!entry.isFile()) continue;
@@ -548,9 +554,9 @@ export async function scanWorkspaceWithStatus(workspaceRoot: string): Promise<Wo
         size: metadata.size,
       });
     }
+    for (const subdirectory of subdirectories.reverse()) pending.push(subdirectory);
   }
 
-  await visit(resolve(workspaceRoot));
   return {
     files: files.slice(0, MAX_WORKSPACE_SCAN_FILES),
     truncated: files.length > MAX_WORKSPACE_SCAN_FILES,
@@ -1938,4 +1944,41 @@ export function resolveWorkspaceFile(workspaceRoot: string, path: string): strin
 export function normalizeWorkspaceRelativePath(workspaceRoot: string, path: string): string {
   const root = resolve(workspaceRoot);
   return relative(root, assertWorkspacePath(root, path)).split(sep).join("/");
+}
+
+/**
+ * Resolve a workspace-relative path to its absolute form, rejecting any path
+ * whose existing segments traverse a symbolic link. The lexical
+ * {@link resolveWorkspaceFile} alone cannot protect host-side file endpoints:
+ * a symlink planted inside the sandboxed workspace (e.g. by model code) would
+ * otherwise be followed by the API process outside the sandbox, escaping the
+ * workspace. Every path segment that already exists is lstat'd; a symlink at
+ * any level throws. Missing intermediate directories are allowed so callers
+ * can create them afterwards.
+ */
+export async function assertSafeWorkspaceTarget(workspaceRoot: string, relativePath: string): Promise<string> {
+  const target = resolveWorkspaceFile(workspaceRoot, relativePath);
+  const root = resolve(workspaceRoot);
+  let current = root;
+  const segments = relative(root, target).split(sep).filter(Boolean);
+  for (let index = 0; index < segments.length; index += 1) {
+    current = resolve(current, segments[index]!);
+    let metadata;
+    try {
+      metadata = await lstat(current);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") break;
+      throw error;
+    }
+    if (metadata.isSymbolicLink()) {
+      throw new Error(`Path escapes the workspace through a symbolic link: ${relativePath}`);
+    }
+    if (index < segments.length - 1 && !metadata.isDirectory()) {
+      throw new Error(`Workspace path parent is not a directory: ${relativePath}`);
+    }
+    if (index === segments.length - 1 && !metadata.isFile() && !metadata.isDirectory()) {
+      throw new Error(`Refusing to read or write special device path: ${relativePath}`);
+    }
+  }
+  return target;
 }

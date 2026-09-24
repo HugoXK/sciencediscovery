@@ -16,7 +16,7 @@ import { createTest } from "../../../test/support/tagged/compat.mjs";
 const { test } = createTest(import.meta.url, { tags: ["category:ut", "os:linux", "arch:amd64", "arch:arm64"] });
 import assert from "node:assert/strict";
 import { mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { resolve, sep } from "node:path";
 
 import { Check } from "typebox/value";
 
@@ -33,7 +33,7 @@ import {
   type WorkspaceFileProvenance,
 } from "@sciencediscovery/schema";
 
-import { createSubagentTools, createWorkspaceTools, filterTools, normalizeWorkspaceRelativePath } from "./workspace.js";
+import { assertSafeWorkspaceTarget, createSubagentTools, createWorkspaceTools, filterTools, normalizeWorkspaceRelativePath, scanWorkspace } from "./workspace.js";
 import { ENVIRONMENT_TOOL_NAMES } from "./environment-tool-names.js";
 import {
   DEFAULT_SUBAGENT_MAX_TURNS,
@@ -51,6 +51,51 @@ test("normalizeWorkspaceRelativePath preserves nested names within each agent wr
   assert.equal(normalizeWorkspaceRelativePath(sessionRoot, "e/./f/g.md"), "e/f/g.md");
   assert.equal(normalizeWorkspaceRelativePath(subagentRoot, "outputs/result.csv"), "outputs/result.csv");
   assert.throws(() => normalizeWorkspaceRelativePath(subagentRoot, "../escape.csv"), /escapes the workspace/);
+});
+
+test("assertSafeWorkspaceTarget resolves paths without symlink traversal", async (context) => {
+  const root = resolve(process.cwd(), ".tmp", `safe-target-${Date.now()}-${process.pid}`);
+  await mkdir(resolve(root, "nested", "deep"), { recursive: true });
+  await mkdir(resolve(root, ".sciencediscovery"), { recursive: true });
+  await writeFile(resolve(root, "nested", "deep", "file.txt"), "ok");
+  context.after(() => rm(root, { force: true, recursive: true }));
+
+  assert.equal(await assertSafeWorkspaceTarget(root, "nested/deep/file.txt"), resolve(root, "nested", "deep", "file.txt"));
+  assert.equal(await assertSafeWorkspaceTarget(root, "nested/deep/missing.txt"), resolve(root, "nested", "deep", "missing.txt"));
+  await assert.rejects(() => assertSafeWorkspaceTarget(root, "../outside.txt"), /escapes the workspace/);
+  await assert.rejects(() => assertSafeWorkspaceTarget(root, "nested/../../../outside.txt"), /escapes the workspace/);
+});
+
+test("assertSafeWorkspaceTarget rejects a symlink at any existing segment", async (context) => {
+  const fixtureRoot = resolve(process.cwd(), ".tmp", `safe-target-symlink-${Date.now()}-${process.pid}`);
+  const root = resolve(fixtureRoot, "workspace");
+  await mkdir(root, { recursive: true });
+  await writeFile(resolve(fixtureRoot, "outside.txt"), "host file");
+  await symlink(resolve(fixtureRoot, "outside.txt"), resolve(root, "leak.txt"));
+  await symlink(resolve(fixtureRoot), resolve(root, "leak-dir"));
+  await symlink(resolve(fixtureRoot, "outside.txt"), resolve(root, "leak-nested"));
+  await mkdir(resolve(root, "nested"), { recursive: true });
+  await symlink(resolve(fixtureRoot, "outside.txt"), resolve(root, "nested", "leak.txt"));
+  context.after(() => rm(fixtureRoot, { force: true, recursive: true }));
+
+  await assert.rejects(() => assertSafeWorkspaceTarget(root, "leak.txt"), /through a symbolic link/);
+  await assert.rejects(() => assertSafeWorkspaceTarget(root, "leak-dir/anything.txt"), /through a symbolic link/);
+  await assert.rejects(() => assertSafeWorkspaceTarget(root, "nested/leak.txt"), /through a symbolic link/);
+  await assert.rejects(() => assertSafeWorkspaceTarget(root, "leak-nested/secret.txt"), /through a symbolic link/);
+  // A non-symlinked file elsewhere in the workspace still resolves.
+  assert.equal(await assertSafeWorkspaceTarget(root, "nested/clean.txt"), resolve(root, "nested", "clean.txt"));
+});
+
+test("scanWorkspace handles very deep directory trees without exhausting the call stack", async (context) => {
+  const root = resolve(process.cwd(), ".tmp", `scan-deep-${Date.now()}-${process.pid}`);
+  const deepPath = root.split(sep).concat(Array.from({ length: 300 }, () => "d")).join(sep);
+  await mkdir(deepPath, { recursive: true });
+  await writeFile(resolve(deepPath, "leaf.txt"), "deep");
+  context.after(() => rm(root, { force: true, recursive: true }));
+
+  const files = await scanWorkspace(root);
+  assert.equal(files.length, 1);
+  assert.match(files[0]!.path, /leaf\.txt$/);
 });
 
 test("run-scoped extra tools are injected before the established allow/deny policy", async () => {

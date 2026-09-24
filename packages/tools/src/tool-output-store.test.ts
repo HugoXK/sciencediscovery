@@ -274,6 +274,21 @@ test("a stored single-line result supports bounded literal search", async () => 
   assert.match(response.content[0]?.text ?? "", /model deployment/u);
 });
 
+test("case-insensitive search aligns folded offsets back to the original text", async () => {
+  const store = new ToolOutputStore();
+  // "İ" folds to "i̇", which changes the string length; the match context must
+  // still be taken from the original text, not a misaligned lowercased copy.
+  const saved = await store.save("web_fetch", `İstanbul: ${"a".repeat(300)}BIZON${"b".repeat(300)} Istanbul`);
+  const result = await store.search(saved.ref, "bizon", { contextChars: 10 });
+  assert.equal(result.totalMatches, 1);
+  assert.equal(result.matches.length, 1);
+  assert.match(result.matches[0]?.text ?? "", /BIZON/u);
+  // The snippet around the match keeps the surrounding original characters.
+  const match = result.matches[0]?.text ?? "";
+  assert.match(match, /^a+/u);
+  assert.match(match, /b+$/u);
+});
+
 test("read_tool_output modes are mutually exclusive", async () => {
   const store = new ToolOutputStore();
   const saved = await store.save("web_fetch", "one long line");
