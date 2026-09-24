@@ -33,7 +33,7 @@ import {
 // Static suite metadata is inherited by each framework-expanded journey.
 test.describe("journey-provider-model-catalog.spec", { tag: ["@category:e2e", "@os:linux", "@arch:amd64", "@model:mock", "@sandbox:bubblewrap"] }, () => {
 
-test.use({ locale: "zh-CN" });
+test.use({ locale: "zh-CN", timezoneId: "UTC" });
 
 interface ProviderStub {
   anthropicBodies: Array<Record<string, unknown>>;
