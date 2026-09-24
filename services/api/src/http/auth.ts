@@ -22,7 +22,11 @@ function matchesToken(actual: string, expected: string): boolean {
 }
 
 export function isAuthorized(request: IncomingMessage, expectedToken: string): boolean {
-  const authorization = request.headers.authorization;
+  // Node exposes duplicate headers as an array; guard against callers sending
+  // more than one Authorization header, which would otherwise crash auth with
+  // a TypeError and surface as an unhandled 500 (F-24).
+  const header = request.headers.authorization;
+  const authorization = Array.isArray(header) ? header[0] : header;
   const token = authorization?.startsWith("Bearer ") ? authorization.slice(7) : "";
   return matchesToken(token, expectedToken);
 }

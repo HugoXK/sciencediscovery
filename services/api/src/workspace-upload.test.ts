@@ -24,6 +24,7 @@ import type { TestContext } from "node:test";
 
 import {
   allocateUploadPath,
+  disposeMultipartUploads,
   measureWorkspaceBytes,
   parseConflictPolicy,
   readMultipartUploads,
@@ -143,6 +144,51 @@ test("readMultipartUploads allows body when maxRequestBytes is 0 (unlimited)", a
   assert.equal(parts.length, 1);
   assert.equal(parts[0]?.filename, "notes.txt");
   assert.equal(parts[0]?.bytes.toString("utf8"), "hello");
+  await disposeMultipartUploads(parts);
+});
+
+test("readMultipartUploads spools parts above the in-memory ceiling to disk", async () => {
+  const boundary = "----sa-spool-upload";
+  const big = "x".repeat(8 * 1_024 * 1_024 + 5_000);
+  const body = Buffer.from(
+    [
+      `--${boundary}`,
+      'Content-Disposition: form-data; name="files"; filename="big.bin"',
+      "",
+      big,
+      `--${boundary}--`,
+      "",
+    ].join("\r\n"),
+  );
+  const request = Readable.from([body]) as IncomingMessage;
+  request.headers = { "content-type": `multipart/form-data; boundary=${boundary}` };
+  const parts = await readMultipartUploads(request, 0);
+  assert.equal(parts.length, 1);
+  assert.equal(parts[0]?.filename, "big.bin");
+  assert.ok(parts[0]?.spoolPath, "a large part must be spooled, not held in memory");
+  assert.equal((await readFile(parts[0].spoolPath!)).length, big.length);
+  await disposeMultipartUploads(parts);
+  await assert.rejects(readFile(parts[0].spoolPath!), { code: "ENOENT" });
+});
+
+test("readMultipartUploads enforces maxRequestBytes while streaming", async () => {
+  const boundary = "----sa-request-limit";
+  const body = Buffer.from(
+    [
+      `--${boundary}`,
+      'Content-Disposition: form-data; name="files"; filename="notes.txt"',
+      "",
+      "hello",
+      `--${boundary}--`,
+      "",
+    ].join("\r\n"),
+  );
+  const request = Readable.from([body]) as IncomingMessage;
+  request.headers = { "content-type": `multipart/form-data; boundary=${boundary}` };
+  await assert.rejects(
+    readMultipartUploads(request, 5),
+    (error: NodeJS.ErrnoException) => error.code === "PAYLOAD_TOO_LARGE",
+  );
 });
 
 test("writeWorkspaceUpload enforces file and workspace quotas", async (context) => {

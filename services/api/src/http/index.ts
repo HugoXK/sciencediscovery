@@ -170,12 +170,12 @@ import { ideaTreeSkillDeletionReferences } from "../idea-tree/deletion-impact.js
 import { resolveExecutorCapability } from "../idea-tree/executor-capability.js";
 import { resolveEnvironmentInstallRequest } from "../environment-sources.js";
 import {
+  disposeMultipartUploads,
   inferMediaType,
   parseConflictPolicy,
   readMultipartUploads,
   uploadWorkspaceParts,
 } from "../workspace-upload.js";
-import { sandboxNetworkRevision } from "../store/sandbox-network.js";
 import {
   ArtifactDashboardError,
   buildArtifactDashboard,
@@ -772,16 +772,15 @@ export function createApiServer(config = loadServerConfig(), dependencies: ApiSe
           maxRequestBytes: quotas.uploadMaxRequestBytes,
           maxWorkspaceBytes: quotas.runnerMaxWorkspaceBytes,
         };
-        const sandboxNetworkSettings = store.getSandboxNetworkSettings();
+        // Expose only liveness facts, never internal policy detail. The
+        // endpoint must stay unauthenticated (the Docker healthcheck and CLI
+        // probes curl it without a token), so sandbox network policy, seccomp
+        // baselines and runner capabilities must not be returned here — they
+        // are reconnaissance surface (F-30).
         sendJson(response, 200, {
           memoryGraph,
           milestone: "M4",
-          sandboxNetwork: {
-            ...sandboxNetworkSettings,
-            revision: sandboxNetworkRevision(sandboxNetworkSettings),
-            runner: runner?.sandboxNetwork,
-          },
-          runner: runner ?? { status: "unavailable" },
+          runner: runner ? { status: "ok" } : { status: "unavailable" },
           service: "sciencediscovery-api",
           status: runner ? "ok" : "degraded",
           workspace,
@@ -2293,12 +2292,15 @@ export function createApiServer(config = loadServerConfig(), dependencies: ApiSe
         const requestedApprovalMode = body.approvalMode;
         const { approvalMode: _approvalMode, ...remaining } = body;
         const hasRemainingChanges = Object.values(remaining).some((value) => value !== undefined);
-        if (requestedApprovalMode && hasRemainingChanges) {
-          return sendError(response, 400, "approvalMode must be changed in a dedicated request");
-        }
+        // Apply the non-approvalMode fields first so a combined request never
+        // silently discards them (a modelId/title change was previously lost
+        // when the whole body was rejected for carrying approvalMode too).
+        const sessionAfterRemaining = hasRemainingChanges
+          ? await store.updateSession(sessionId, remaining)
+          : store.getSession(sessionId);
         // Read the mode in force before the switch: it is both the guard against
         // recording a no-op re-selection and the "from" side of the audit entry.
-        const previousApprovalMode = requestedApprovalMode ? store.getSession(sessionId)?.approvalMode : undefined;
+        const previousApprovalMode = requestedApprovalMode ? sessionAfterRemaining?.approvalMode : undefined;
         if (requestedApprovalMode && previousApprovalMode !== requestedApprovalMode) {
           const teardown = (await runnerClient.health().catch(() => undefined))?.scientificEnvs?.available
             ? await runnerClient.teardownKernels(sessionId, "Approval mode changed; persistent memory was lost")
@@ -2323,9 +2325,9 @@ export function createApiServer(config = loadServerConfig(), dependencies: ApiSe
             });
           }
         }
-        sendJson(response, 200, hasRemainingChanges
-          ? await store.updateSession(sessionId, remaining)
-          : store.getSession(sessionId));
+        sendJson(response, 200, hasRemainingChanges || requestedApprovalMode
+          ? store.getSession(sessionId)
+          : sessionAfterRemaining);
         return;
       }
       if (sessionMatch && request.method === "DELETE") {
@@ -2491,7 +2493,7 @@ export function createApiServer(config = loadServerConfig(), dependencies: ApiSe
           return sendError(response, 400, "Permission decision is required");
         }
         if (!new Set(["allow_once", "allow_matching", "deny"]).has(body.decision)) {
-          return sendError(response, 400, "Invalid permission decision");
+          return sendError(response, 400, "Invalid permission decision. Valid decisions: allow_once, allow_matching, deny");
         }
         if (!existingRequest.sessionId) return sendError(response, 400, "Permission decisions require a Session");
         const outcome = await permissionDecisions.run(existingRequest.sessionId, async () => {
@@ -2658,22 +2660,29 @@ export function createApiServer(config = loadServerConfig(), dependencies: ApiSe
           maxWorkspaceBytes: quotas.runnerMaxWorkspaceBytes,
         };
         const parts = await readMultipartUploads(request, uploadLimits.maxRequestBytes);
-        const result: WorkspaceUploadResult = await withWorkspaceMutation(new VersionStore(store.dataDir), store.workspacePath(sessionId), () => uploadWorkspaceParts({
-          conflict,
-          limits: uploadLimits,
-          listFiles: () => listWorkspaceFiles(store, sessionId),
-          parts,
-          registerArtifact: async (path) => {
-            await provenanceRecorder.registerWorkspaceArtifact({
-              origin: "user_upload",
-              originMeta: { uploadedFilename: path },
-              path,
-              sessionId,
-              workspaceRoot: store.workspacePath(sessionId),
-            });
-          },
-          workspaceRoot: store.workspacePath(sessionId),
-        }), { kind: "user-upload" });
+        let result: WorkspaceUploadResult;
+        try {
+          result = await withWorkspaceMutation(new VersionStore(store.dataDir), store.workspacePath(sessionId), () => uploadWorkspaceParts({
+            conflict,
+            limits: uploadLimits,
+            listFiles: () => listWorkspaceFiles(store, sessionId),
+            parts,
+            registerArtifact: async (path) => {
+              await provenanceRecorder.registerWorkspaceArtifact({
+                origin: "user_upload",
+                originMeta: { uploadedFilename: path },
+                path,
+                sessionId,
+                workspaceRoot: store.workspacePath(sessionId),
+              });
+            },
+            workspaceRoot: store.workspacePath(sessionId),
+          }), { kind: "user-upload" });
+        } finally {
+          // Large parts were spooled to temp files by the streaming parser;
+          // never leave them behind after the upload is consumed or aborted.
+          await disposeMultipartUploads(parts);
+        }
         // Mirror each uploaded file into a SourceFile node + feeds edge to the
         // session's ResearchGoal. Fire-and-forget: a degraded/unreachable graph
         // never fails the upload (the sink swallows). Only non-failed entries

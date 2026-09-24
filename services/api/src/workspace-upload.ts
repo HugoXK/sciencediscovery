@@ -12,9 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { access, lstat, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { createReadStream, createWriteStream, copyFileSync } from "node:fs";
+import { access, appendFile, copyFile, lstat, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import type { IncomingMessage } from "node:http";
-import { basename, dirname, extname, relative, resolve, sep } from "node:path";
+import { tmpdir } from "node:os";
+import { basename, dirname, extname, join, relative, resolve, sep } from "node:path";
+import { finished } from "node:stream/promises";
 
 import { resolveWorkspaceFile } from "@sciencediscovery/workspace";
 import { sha256, sha256File } from "@sciencediscovery/cas";
@@ -28,6 +31,12 @@ export const DEFAULT_WORKSPACE_UPLOAD_MAX_FILE_BYTES = 1_073_741_824;
 export const DEFAULT_WORKSPACE_UPLOAD_MAX_REQUEST_BYTES = 10_737_418_240;
 /** Align with runner default workspace quota: 10 GiB. 0 = unlimited. */
 export const DEFAULT_WORKSPACE_MAX_BYTES = 10_737_418_240;
+/**
+ * Multipart parts smaller than this stay in memory; larger ones are spooled
+ * to a temporary file so a single large upload never buffers its whole body
+ * or a whole file part in RAM (F-25).
+ */
+export const MULTIPART_IN_MEMORY_PART_BYTES = 8 * 1_024 * 1_024;
 
 export interface WorkspaceUploadLimits {
   maxFileBytes: number;
@@ -36,9 +45,12 @@ export interface WorkspaceUploadLimits {
 }
 
 export interface MultipartUploadPart {
+  /** In-memory content for parts under {@link MULTIPART_IN_MEMORY_PART_BYTES}. */
   bytes: Buffer;
   fieldName: string;
   filename: string;
+  /** Absolute path of the spooled file when the part exceeded the memory ceiling. */
+  spoolPath?: string;
 }
 
 export interface WorkspaceUploadItemResult {
@@ -94,6 +106,15 @@ export function sanitizeUploadFilename(filename: string): string {
   return base;
 }
 
+/**
+ * Parse a multipart/form-data upload with a hard memory ceiling: the request
+ * body is streamed to a temporary file (never fully buffered), then scanned in
+ * bounded chunks; file parts above {@link MULTIPART_IN_MEMORY_PART_BYTES} are
+ * spooled to their own temporary file instead of being held in memory. Only
+ * small parts and headers stay in RAM, so a single large upload cannot exhaust
+ * the process heap (F-25). Call {@link disposeMultipartUploads} on the result
+ * to remove the spooled files once the caller has consumed the parts.
+ */
 export async function readMultipartUploads(
   request: IncomingMessage,
   maxRequestBytes: number,
@@ -107,34 +128,157 @@ export async function readMultipartUploads(
     });
   }
 
-  const body = await readLimitedBytes(request, maxRequestBytes, "Workspace upload");
+  const spoolRoot = await mkdtemp(join(tmpdir(), "sciencediscovery-upload-"));
+  const bodyPath = join(spoolRoot, "body.bin");
+  let totalBytes = 0;
+  const writer = createWriteStream(bodyPath, { mode: 0o600 });
+  try {
+    for await (const chunk of request) {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      totalBytes += buffer.length;
+      // maxRequestBytes === 0 means unlimited (same as per-file / workspace quotas)
+      if (maxRequestBytes > 0 && totalBytes > maxRequestBytes) {
+        throw Object.assign(new Error(`Workspace upload exceeds the ${maxRequestBytes} byte limit`), {
+          code: "PAYLOAD_TOO_LARGE",
+        });
+      }
+      if (!writer.write(buffer)) await new Promise((resolveDrain) => writer.once("drain", resolveDrain));
+    }
+    writer.end();
+    await finished(writer);
+  } catch (error) {
+    writer.destroy();
+    await rm(spoolRoot, { force: true, recursive: true });
+    throw error;
+  }
+
+  try {
+    return await parseMultipartFile(bodyPath, boundary, spoolRoot);
+  } finally {
+    await rm(bodyPath, { force: true });
+  }
+}
+
+/** Remove the temporary spool files a parsed upload left behind. */
+export async function disposeMultipartUploads(parts: MultipartUploadPart[]): Promise<void> {
+  const directories = new Set<string>();
+  for (const part of parts) {
+    if (part.spoolPath) {
+      directories.add(dirname(part.spoolPath));
+      await rm(part.spoolPath, { force: true });
+    }
+  }
+  for (const directory of directories) {
+    await rm(directory, { force: true, recursive: true });
+  }
+}
+
+async function parseMultipartFile(bodyPath: string, boundary: string, spoolRoot: string): Promise<MultipartUploadPart[]> {
   const delimiter = Buffer.from(`--${boundary}`);
   const nextDelimiter = Buffer.from(`\r\n--${boundary}`);
   const parts: MultipartUploadPart[] = [];
-  let cursor = body.indexOf(delimiter);
-  while (cursor >= 0) {
-    cursor += delimiter.length;
-    if (body.subarray(cursor, cursor + 2).equals(Buffer.from("--"))) break;
-    if (!body.subarray(cursor, cursor + 2).equals(Buffer.from("\r\n"))) {
-      throw new Error("Workspace upload multipart body is malformed");
+
+  /** Accumulator for one file part: memory up to the ceiling, then a spool file. */
+  class PartAccumulator {
+    readonly chunks: Buffer[] = [];
+    size = 0;
+    spoolPath?: string;
+    constructor(private readonly index: number) {}
+
+    async append(content: Buffer): Promise<void> {
+      this.size += content.length;
+      if (!this.spoolPath && this.size <= MULTIPART_IN_MEMORY_PART_BYTES) {
+        this.chunks.push(content);
+        return;
+      }
+      if (!this.spoolPath) {
+        this.spoolPath = join(spoolRoot, `part-${this.index}.bin`);
+        await writeFile(this.spoolPath, Buffer.concat(this.chunks), { mode: 0o600 });
+        this.chunks.length = 0;
+      }
+      await appendFile(this.spoolPath, content);
     }
-    const headerStart = cursor + 2;
-    const headerEnd = body.indexOf(Buffer.from("\r\n\r\n"), headerStart);
-    if (headerEnd < 0) throw new Error("Workspace upload multipart headers are malformed");
-    const headers = body.subarray(headerStart, headerEnd).toString("utf8");
-    const contentDisposition = headers.split("\r\n").find((line) => /^content-disposition:/i.test(line));
-    const fieldName = contentDisposition?.match(/\bname="([^"]+)"/i)?.[1] ?? "";
-    const rawFilename = contentDisposition?.match(/\bfilename\*?=(?:UTF-8''|")?([^";]+)"?/i)?.[1];
-    const contentStart = headerEnd + 4;
-    const contentEnd = body.indexOf(nextDelimiter, contentStart);
-    if (contentEnd < 0) throw new Error("Workspace upload multipart body has no closing boundary");
-    if ((fieldName === "file" || fieldName === "files") && rawFilename) {
-      const filename = decodeUploadFilename(rawFilename);
-      const bytes = Buffer.from(body.subarray(contentStart, contentEnd));
-      // Keep 0-byte parts: empty templates/placeholders are valid uploads.
-      parts.push({ bytes, fieldName, filename });
+
+    toPart(fieldName: string, filename: string): MultipartUploadPart {
+      if (this.spoolPath) return { bytes: Buffer.alloc(0), fieldName, filename, spoolPath: this.spoolPath };
+      return { bytes: Buffer.concat(this.chunks), fieldName, filename };
     }
-    cursor = contentEnd + 2;
+  }
+
+  // Rolling window that keeps the tail long enough to detect a boundary that
+  // straddles two reads. 256 KiB reads bound per-iteration memory; the window
+  // is trimmed aggressively so a huge part body never accumulates in RAM.
+  let window = Buffer.alloc(0);
+  let inFilePart: { accumulator: PartAccumulator; fieldName: string; filename: string } | undefined;
+  let foundClosingBoundary = false;
+
+  const processWindow = async (): Promise<void> => {
+    for (;;) {
+      if (inFilePart) {
+        // Consume part body bytes up to the next `\r\n--boundary`.
+        const contentEnd = window.indexOf(nextDelimiter);
+        if (contentEnd < 0) {
+          // No delimiter yet: forward everything except the boundary's prefix
+          // so a split delimiter is still detected on the next chunk.
+          const keep = Math.max(0, nextDelimiter.length - 1);
+          const forward = window.length - keep;
+          if (forward > 0) {
+            await inFilePart.accumulator.append(window.subarray(0, forward));
+            window = window.subarray(forward);
+          }
+          return;
+        }
+        await inFilePart.accumulator.append(window.subarray(0, contentEnd));
+        parts.push(inFilePart.accumulator.toPart(inFilePart.fieldName, inFilePart.filename));
+        inFilePart = undefined;
+        window = window.subarray(contentEnd + 2); // swallow the leading `\r\n`
+        continue;
+      }
+      const startAt = window.indexOf(delimiter);
+      if (startAt < 0) {
+        // No boundary anywhere: keep a tail that could still form one.
+        const keep = Math.max(0, delimiter.length + 2);
+        window = window.length > keep ? window.subarray(window.length - keep) : window;
+        return;
+      }
+      // Skip the preamble/bytes before this boundary.
+      window = window.subarray(startAt);
+      if (window.length < delimiter.length + 2) return; // need the `--` / `\r\n` verdict
+      const after = window.subarray(delimiter.length, delimiter.length + 2);
+      if (after.equals(Buffer.from("--"))) {
+        foundClosingBoundary = true;
+        return;
+      }
+      if (!after.equals(Buffer.from("\r\n"))) throw new Error("Workspace upload multipart body is malformed");
+      const headerStart = delimiter.length + 2;
+      const headerEnd = window.indexOf(Buffer.from("\r\n\r\n"), headerStart);
+      if (headerEnd < 0) {
+        // Headers not complete yet; keep enough to finish them.
+        window = window.subarray(Math.max(0, window.length - 4_096));
+        return;
+      }
+      const headers = window.subarray(headerStart, headerEnd).toString("utf8");
+      const contentDisposition = headers.split("\r\n").find((line) => /^content-disposition:/i.test(line));
+      const fieldName = contentDisposition?.match(/\bname="([^"]+)"/i)?.[1] ?? "";
+      const rawFilename = contentDisposition?.match(/\bfilename\*?=(?:UTF-8''|")?([^";]+)"?/i)?.[1];
+      const contentStart = headerEnd + 4;
+      window = window.subarray(contentStart);
+      if ((fieldName === "file" || fieldName === "files") && rawFilename) {
+        inFilePart = { accumulator: new PartAccumulator(parts.length), fieldName, filename: decodeUploadFilename(rawFilename) };
+      }
+    }
+  };
+
+  const reader = createReadStream(bodyPath, { highWaterMark: 256 * 1_024 });
+  for await (const chunk of reader) {
+    window = window.length ? Buffer.concat([window, chunk]) : chunk;
+    await processWindow();
+    if (foundClosingBoundary) break;
+  }
+  if (inFilePart) throw new Error("Workspace upload multipart body has no closing boundary");
+  if (!foundClosingBoundary && window.length >= 2) {
+    // Body ended without an explicit closing boundary — a malformed request.
+    if (parts.length) throw new Error("Workspace upload multipart body has no closing boundary");
   }
   if (!parts.length) throw new Error("Workspace upload must contain at least one file field");
   return parts;
@@ -146,21 +290,6 @@ function decodeUploadFilename(raw: string): string {
   } catch {
     return raw.trim();
   }
-}
-
-async function readLimitedBytes(request: IncomingMessage, maxBytes: number, label: string): Promise<Buffer> {
-  const chunks: Buffer[] = [];
-  let total = 0;
-  for await (const chunk of request) {
-    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    total += buffer.length;
-    // maxBytes === 0 means unlimited (same as per-file / workspace quotas)
-    if (maxBytes > 0 && total > maxBytes) {
-      throw Object.assign(new Error(`${label} exceeds the ${maxBytes} byte limit`), { code: "PAYLOAD_TOO_LARGE" });
-    }
-    chunks.push(buffer);
-  }
-  return Buffer.concat(chunks);
 }
 
 export async function measureWorkspaceBytes(workspaceRoot: string): Promise<number> {
@@ -188,6 +317,7 @@ export async function measureWorkspaceBytes(workspaceRoot: string): Promise<numb
   return total;
 }
 
+/** Lexical containment plus per-segment symlink rejection for upload targets. */
 async function assertSafeWorkspaceTarget(workspaceRoot: string, relativePath: string): Promise<string> {
   const target = resolveWorkspaceFile(workspaceRoot, relativePath);
   const root = resolve(workspaceRoot);
@@ -254,9 +384,12 @@ export async function writeWorkspaceUpload(options: {
   limits: WorkspaceUploadLimits;
   workspaceRoot: string;
   workspaceBytes?: number;
+  /** Spooled part content; when set, `bytes` is ignored and the file is copied. */
+  spoolPath?: string;
 }): Promise<WorkspaceUploadItemResult & { absolutePath: string; bytesWritten: number }> {
   const originalName = sanitizeUploadFilename(options.filename);
-  if (options.limits.maxFileBytes > 0 && options.bytes.length > options.limits.maxFileBytes) {
+  const partSize = options.spoolPath ? (await stat(options.spoolPath)).size : options.bytes.length;
+  if (options.limits.maxFileBytes > 0 && partSize > options.limits.maxFileBytes) {
     throw Object.assign(
       new Error(`File exceeds the ${options.limits.maxFileBytes} byte upload limit`),
       { code: "PAYLOAD_TOO_LARGE" },
@@ -275,7 +408,7 @@ export async function writeWorkspaceUpload(options: {
   }
   if (
     options.limits.maxWorkspaceBytes > 0
-    && currentBytes - replacedBytes + options.bytes.length > options.limits.maxWorkspaceBytes
+    && currentBytes - replacedBytes + partSize > options.limits.maxWorkspaceBytes
   ) {
     throw Object.assign(
       new Error(`Upload would exceed the ${options.limits.maxWorkspaceBytes} byte workspace quota`),
@@ -285,7 +418,11 @@ export async function writeWorkspaceUpload(options: {
   await mkdir(dirname(target), { recursive: true });
   const staging = `${target}.uploading-${process.pid}-${Date.now()}`;
   try {
-    await writeFile(staging, options.bytes);
+    if (options.spoolPath) {
+      await copyFile(options.spoolPath, staging);
+    } else {
+      await writeFile(staging, options.bytes);
+    }
     const staged = await lstat(staging);
     if (!staged.isFile()) throw new Error("Upload staging path is not a regular file");
     await rename(staging, target);
@@ -295,8 +432,8 @@ export async function writeWorkspaceUpload(options: {
   }
   return {
     absolutePath: target,
-    bytesWritten: options.bytes.length,
-    hash: sha256(options.bytes),
+    bytesWritten: partSize,
+    hash: options.spoolPath ? await sha256File(options.spoolPath) : sha256(options.bytes),
     originalName,
     path: allocation.path,
     status: allocation.status,
@@ -316,7 +453,8 @@ export async function uploadWorkspaceParts(options: {
   let workspaceBytes = await measureWorkspaceBytes(options.workspaceRoot);
   for (const part of options.parts) {
     try {
-      if (options.limits.maxFileBytes > 0 && part.bytes.length > options.limits.maxFileBytes) {
+      const partSize = part.spoolPath ? (await stat(part.spoolPath)).size : part.bytes.length;
+      if (options.limits.maxFileBytes > 0 && partSize > options.limits.maxFileBytes) {
         throw Object.assign(
           new Error(`File exceeds the ${options.limits.maxFileBytes} byte upload limit`),
           { code: "PAYLOAD_TOO_LARGE" },
@@ -327,6 +465,7 @@ export async function uploadWorkspaceParts(options: {
         conflict: options.conflict,
         filename: part.filename,
         limits: options.limits,
+        spoolPath: part.spoolPath,
         workspaceBytes,
         workspaceRoot: options.workspaceRoot,
       });

@@ -196,6 +196,12 @@ export function normalizeRuntimeSettings(
   for (const field of ["modelId", "reviewModelId"] as const) {
     if (!hasOwn(value, field)) continue;
     const modelId = value[field];
+    if (modelId === null) {
+      // Explicit null clears the override so the scope falls back to its
+      // parent, and lets a caller release a model before deleting it.
+      delete normalized[field];
+      continue;
+    }
     if (typeof modelId !== "string" || !modelIds.has(modelId)) {
       if (strict) throw new Error(`${field} must reference an existing model profile`);
       continue;

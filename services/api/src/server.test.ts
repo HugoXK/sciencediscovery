@@ -17,7 +17,7 @@ const { test } = createTest(import.meta.url, { tags: ["category:ut", "os:linux",
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
-import { access, chmod, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { createServer as createHttpServer, type ServerResponse } from "node:http";
 import { connect, type AddressInfo } from "node:net";
 import { resolve } from "node:path";
@@ -72,7 +72,6 @@ import type {
   SessionRun,
   SessionRunEvent,
   SessionUsageSummary,
-  RunnerHealth,
   ScientificEnvironmentSetup,
   ScientificArtifact,
   ScientificArtifactVersion,
@@ -3651,14 +3650,15 @@ test("API runs a configured OpenAI-compatible model through the gateway and Pyth
     name: "Tool test model",
   });
 
-  const health = await jsonRequest<{ runner: RunnerHealth; status: string }>(`${origin}/health`);
+  const health = await jsonRequest<{ runner: { status: string }; status: string }>(`${origin}/health`);
   assert.equal(health.response.status, 200);
   assert.equal(health.body.status, "ok");
-  assert.equal(health.body.runner.seccompBaseline, "multiarch-v1-profile-aware");
-  assert.equal(health.body.runner.noNewPrivileges, true);
-  assert.equal(health.body.runner.executionAuth, "bearer+hmac-sha256");
-  assert.equal(health.body.runner.workerConcurrency, null);
-  assert.equal(health.body.runner.executionTimeoutMs, 60_000);
+  assert.equal(health.body.runner.status, "ok");
+  // F-30: /health stays unauthenticated for probes but must not leak internal
+  // policy (sandbox network, seccomp baseline, quotas, runner capabilities).
+  assert.equal("sandboxNetwork" in health.body, false);
+  assert.equal("seccompBaseline" in health.body.runner, false);
+  assert.equal("executionAuth" in health.body.runner, false);
 
   const unauthorized = await fetch(`${origin}/api/projects`);
   assert.equal(unauthorized.status, 401);
