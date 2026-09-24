@@ -264,6 +264,50 @@ test("the shared transport classifies status codes and bounds the body", async (
   );
 });
 
+test("the shared transport follows 3xx redirects to the final page", async (context) => {
+  // Bing redirects bing.com to a regional host in some networks; a 302 must
+  // not be reported as a failed engine (F-31).
+  const { providerRequest } = await import("./http.js");
+  const server = await localServer((request, response) => {
+    if (request.url === "/region") {
+      response.writeHead(302, { location: "/results" }).end();
+      return;
+    }
+    if (request.url === "/results") {
+      response.writeHead(200, { "content-type": "text/html" }).end("<html>final page</html>");
+      return;
+    }
+    response.writeHead(404).end();
+  });
+  context.after(() => server.close());
+
+  const followed = await providerRequest({ timeoutMs: 5_000, url: `${server.origin}/region` });
+  assert.equal(followed.statusCode, 200);
+  assert.match(followed.body, /final page/);
+});
+
+test("the shared transport refuses a redirect to a private address", async (context) => {
+  // A compromised or poisoned vendor could 302 to an internal service; the
+  // cross-host redirect must be rejected before it is followed (F-31).
+  const { providerRequest, PublicUrlError } = await import("./http.js");
+  const server = await localServer((_request, response) => {
+    response.writeHead(302, { location: "http://169.254.169.254/latest/meta-data/" }).end();
+  });
+  context.after(() => server.close());
+
+  await assert.rejects(
+    providerRequest({
+      timeoutMs: 5_000,
+      url: `${server.origin}/region`,
+      resolveHost: async (hostname) => {
+        if (hostname === "169.254.169.254") return ["169.254.169.254"];
+        return [];
+      },
+    }),
+    PublicUrlError,
+  );
+});
+
 test("a hung endpoint is cut off by the operation budget", async (context) => {
   const { providerRequest, thrownErrorCode } = await import("./http.js");
   const server = await localServer((_request, response) => {

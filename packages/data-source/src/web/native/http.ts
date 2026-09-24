@@ -27,6 +27,7 @@ import { request } from "undici";
 import type { ResolvedProxy } from "@sciencediscovery/schema";
 
 import { proxyDispatcher } from "../../proxy/index.js";
+import { assertPublicUrl } from "./url-guard.js";
 
 /** Matches the response ceiling the gateway enforced before this path moved. */
 export const MAX_PROVIDER_RESPONSE_BYTES = 1_000_000;
@@ -97,6 +98,8 @@ export interface ProviderRequestOptions {
   signal?: AbortSignal;
   timeoutMs: number;
   url: string;
+  /** Test seam: resolve a redirect target's hostname for the public-URL guard. */
+  resolveHost?: (hostname: string) => Promise<string[]>;
 }
 
 /**
@@ -110,19 +113,45 @@ export async function providerRequest(options: ProviderRequestOptions): Promise<
   options.signal?.addEventListener("abort", abortOuter, { once: true });
   const timer = setTimeout(() => controller.abort(), Math.max(1, options.timeoutMs));
   try {
-    const dispatcher = options.proxy ? proxyDispatcher(options.proxy, options.url) : undefined;
-    const response = await request(options.url, {
-      method: options.method ?? "GET",
-      ...(options.headers ? { headers: options.headers } : {}),
-      ...(options.body === undefined ? {} : { body: options.body }),
-      signal: controller.signal,
-      // The wall-clock budget above owns the deadline; per-phase undici timeouts
-      // would otherwise fire with a less specific error than the caller expects.
-      bodyTimeout: 0,
-      headersTimeout: Math.max(1, options.timeoutMs),
-      ...(dispatcher ? { dispatcher } : {}),
-    });
-    return { body: await readBounded(response.body), statusCode: response.statusCode };
+    // Vendors routinely answer with 3xx (Bing redirects bing.com to a regional
+    // host, cn.bing.com, in some networks). Without following them every engine
+    // that redirects would be counted as a failure even though the page loads
+    // fine, taking web search down for a network that happens to get redirected
+    // (F-31). Follow a bounded number of hops by hand so a cross-host redirect
+    // is re-checked with the same public-URL guard as a user-supplied fetch URL
+    // — undici's built-in follow would happily land on a private address.
+    let url = options.url;
+    const origin = new URL(url);
+    for (let hop = 0; hop <= 3; hop += 1) {
+      const dispatcher = options.proxy ? proxyDispatcher(options.proxy, url) : undefined;
+      const response = await request(url, {
+        method: options.method ?? "GET",
+        ...(options.headers ? { headers: options.headers } : {}),
+        ...(options.body === undefined ? {} : { body: options.body }),
+        // GET-style redirects must not replay a POST body onto the target.
+        ...(options.method === "POST" && hop > 0 ? { body: undefined, method: "GET" } : {}),
+        signal: controller.signal,
+        // The wall-clock budget above owns the deadline; per-phase undici timeouts
+        // would otherwise fire with a less specific error than the caller expects.
+        bodyTimeout: 0,
+        headersTimeout: Math.max(1, options.timeoutMs),
+        ...(dispatcher ? { dispatcher } : {}),
+      });
+      if (response.statusCode < 300 || response.statusCode >= 400 || hop === 3) {
+        return { body: await readBounded(response.body), statusCode: response.statusCode };
+      }
+      const locationHeader = response.headers.location;
+      await response.body.dump?.().catch(() => undefined);
+      const location = Array.isArray(locationHeader) ? locationHeader[0] : locationHeader;
+      if (!location) return { body: "", statusCode: response.statusCode };
+      const target = new URL(location, url);
+      // Same-host redirects (e.g. a path-level 302) stay inside a target the
+      // caller already validated; a redirect to another host must be proven
+      // public before it is followed.
+      if (target.hostname !== origin.hostname) await assertPublicUrl(target.toString(), options.resolveHost);
+      url = target.toString();
+    }
+    throw new Error("provider request exceeded its redirect budget");
   } finally {
     clearTimeout(timer);
     options.signal?.removeEventListener("abort", abortOuter);
