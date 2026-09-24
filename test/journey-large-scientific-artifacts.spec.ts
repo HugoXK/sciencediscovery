@@ -17,12 +17,13 @@ import {
 test.describe("journey-large-scientific-artifacts.spec", { tag: ["@category:e2e", "@os:linux", "@arch:amd64", "@model:mock", "@sandbox:bubblewrap"] }, () => {
   /**
    * E2E-META
-   * Purpose: A researcher can open a large numeric CSV and a large structure JSON without losing either deliverable's preview.
+   * Purpose: A researcher can read a very long source line and open a large numeric CSV and structure JSON without losing their results.
    * Steps:
    *   1. Prepare an isolated Project/Session with a journey-owned local model stub.
-   *   2. Ask the model to create and declare a 130,000-row CSV and an 80,000-atom structure JSON.
-   *   3. Open the CSV visualization workspace and confirm its complete row count appears.
-   *   4. Open the structure artifact and confirm the bounded interactive atom preview appears.
+   *   2. Ask the model to create an 8 MB single-line text file, a 130,000-row CSV, and an 80,000-atom structure JSON.
+   *   3. Read the long text through read_file and confirm the bounded page and next-line continuation are visible.
+   *   4. Open the CSV visualization workspace and confirm its complete row count appears.
+   *   5. Open the structure artifact and confirm the bounded interactive atom preview appears.
    * Environment: Isolated local stack at E2E_BASE_URL with managed Python ready and a journey-owned Project/Session.
    * Type: mocked
    * LLM: journey-owned OpenAI-compatible HTTP stub on 127.0.0.1; one deterministic user turn.
@@ -33,7 +34,7 @@ test.describe("journey-large-scientific-artifacts.spec", { tag: ["@category:e2e"
    * Credentials: E2E_API_TOKEN for the isolated local API only; no external credentials.
    * CostSideEffects: no external cost; generated local files and temporary records are cleaned up in finally.
    */
-  test("J24 大型 CSV 与结构成果仍可查看", { tag: "@mocked" }, async ({ journey, page }) => {
+  test("J24 超长文件与大型科学成果仍可查看", { tag: "@mocked" }, async ({ journey, page }) => {
     test.setTimeout(300_000);
     const marker = `J24-LARGE-ARTIFACTS-${Date.now()}`;
     const python = [
@@ -46,10 +47,13 @@ test.describe("journey-large-scientific-artifacts.spec", { tag: ["@category:e2e"
       "        output.write(f'sample-{index},{index}\\n')",
       "atoms = [{'element': 'C', 'x': index, 'y': 0, 'z': 0} for index in range(80_000)]",
       "Path('results/large.structure.json').write_text(json.dumps({'atoms': atoms}), encoding='utf-8')",
+      "Path('results/long-line.txt').write_text('A' * 8_000_000 + '\\nnext\\n', encoding='utf-8')",
       `print('${marker}')`,
     ].join("\n");
     const stub = await scriptedModel([[
       { arguments: { command: `python3 - <<'PY'\n${python}\nPY` }, tool: "run_shell" },
+      { arguments: { path: "results/long-line.txt" }, tool: "read_file" },
+      { arguments: { path: "results/long-line.txt", offset: 2 }, tool: "read_file" },
       { arguments: { path: "results/large.csv" }, tool: "declare_artifact" },
       { arguments: { path: "results/large.structure.json" }, tool: "declare_artifact" },
       { text: "The large CSV and structure are ready to inspect." },
@@ -67,10 +71,10 @@ test.describe("journey-large-scientific-artifacts.spec", { tag: ["@category:e2e"
     });
 
     journey.scenario({
-      goal: "研究员完成一次分析后，能在产物区查看大型数据表和结构模型。",
+      goal: "研究员完成一次分析后，能分页读取超长文本，并查看大型数据表和结构模型。",
       preconditions: [
         "隔离栈已启动，托管 Python 可用",
-        "模型由旅程自己的本地 stub 驱动，并生成 CSV 与结构 JSON 两份成果",
+        "模型由旅程自己的本地 stub 驱动，并生成超长文本、CSV 与结构 JSON",
       ],
     });
 
@@ -82,6 +86,21 @@ test.describe("journey-large-scientific-artifacts.spec", { tag: ["@category:e2e"
         expect(terminal.status, terminal.error).toBe("completed");
         const tree = await artifactTree(page);
         await expect(tree.artifactCount).toHaveText("2", { timeout: 30_000 });
+      });
+
+      await journey.step("核对超长文本分页", "文件读取步骤显示截断提示，并能从下一行继续读取。", async () => {
+        const reads = page.getByRole("region", { name: /^(Agent activity|Agent 活动)$/ })
+          .locator("details.timeline-disclosure.tool")
+          .filter({ hasText: "Called read_file" });
+        await expect(reads).toHaveCount(2);
+        const first = reads.nth(0);
+        await first.locator(":scope > summary").click();
+        await expect(first.locator(".timeline-content")).toContainText("Line 1 is wider than one page");
+        await expect(first.locator(".timeline-content")).toContainText("Continue with read_file");
+        const second = reads.nth(1);
+        await second.locator(":scope > summary").click();
+        await expect(second.locator(".timeline-content")).toContainText("lines 2-2 of 2");
+        await expect(second.locator(".timeline-content")).toContainText("next");
       });
 
       await journey.step("打开大型 CSV", "可视化工作台显示全部 130,000 行，不出现打开失败。", async () => {
