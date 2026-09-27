@@ -11,6 +11,8 @@ This page describes the current implementation. Requirements are tracked in
 runtime behavior, see [Agent backend](agent-backend.md),
 [Subagent orchestration](subagent-orchestration.md), and [CAS](cas.md).
 
+The diagram below shows the **native executor's** in-process AgentLoop and ContextAssembler. In the default JiuwenSwarm backend, the API still composes product plugins and ToolRegistry, but the model loop and context run in JiuwenSwarm through the adapter. See [Agent backends](../reference/agent-backends.md).
+
 ## 1. How the platform and plugins work together
 
 ```text

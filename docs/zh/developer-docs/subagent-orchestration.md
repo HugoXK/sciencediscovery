@@ -126,7 +126,7 @@ ScienceDiscovery 在 Node 原生 loop 的工具调度层检测“同一工具 + 
 
 ## 6. 历史摘要与 handoff
 
-历史压缩由 Node 原生 loop 自己完成（`services/api/src/native-agent/compaction.ts`）。一次 AgentRun 内部，历史超过阈值时旧消息会被摘要成一条隐藏的 summary checkpoint，并在后续模型调用中继续注入；下一次压缩会把上一份摘要合并进来，因此摘要是滚动更新而不是层层叠加。细节见 [agent-backend.md](agent-backend.md) §7。
+历史压缩由 Node 原生 loop 自己完成（`packages/context/src/compaction.ts`）。一次 AgentRun 内部，历史超过阈值时旧消息会被摘要成一条隐藏的 summary checkpoint，并在后续模型调用中继续注入；下一次压缩会把上一份摘要合并进来，因此摘要是滚动更新而不是层层叠加。细节见 [agent-backend.md](agent-backend.md) §7。
 
 历史 handoff 的原则是：
 
@@ -178,7 +178,7 @@ subagents/<subagentId>/
 - `packages/orchestration/src/subagents.ts`、`run-profile.ts` — 子 Agent 配置与运行契约
 - `services/api/src/runs/index.ts` — 子 Agent 限流、handoff、Brief 校验、嵌套禁用
 - `services/api/src/native-agent/index.ts` — run contract 注入、工具循环检测、超时与取消
-- `services/api/src/native-agent/compaction.ts` — summary checkpoint 与历史压缩
+- `packages/context/src/compaction.ts` — summary checkpoint 与历史压缩
 - `services/api/src/subagents/index.ts`、`workspace-copy.ts` — 独立 Workspace 输入交接和文件复制
 - `services/runner/src/executor.ts` — 执行 Workspace 的沙箱边界
 

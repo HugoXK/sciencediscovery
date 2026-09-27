@@ -2,6 +2,8 @@
 
 本文列出 Agent 循环中模型可见的全部工具。工具由 `packages/workspace` 的 `createWorkspaceTools` 构建，并由 `packages/tools` 注册和调度：**实现全部在 Node 控制面**，模型请求里只带名称、描述与 JSON Schema（见 [agent-backend.md](../developer-docs/agent-backend.md)）。除标注「恒有」外，工具是否出现取决于会话配置；最终列表还会经 `toolPolicy` 过滤（子 Agent 可被限制为白名单子集）。
 
+下表描述**产品自有工具**及 native executor 的可见名称。默认 JiuwenSwarm 后端会用自己的网页工具替换 `web_search`/`web_fetch`，用 todo 工具替换 `update_plan`，子代理默认仍通过平台 `task` 桥接；还可能出现其它 Swarm 工具。开关和边界见 [Agent 后端](agent-backends.md)。
+
 ## 基础工具（恒有）
 
 | 工具 | 参数 | 行为与边界 |
@@ -22,20 +24,20 @@
 
 `run_shell` 首次执行会触发 `code` 类权限卡片（见[运行时行为参考](runtime-behavior.md#权限与评审器)）。执行产生的文件仍保留 diff 与 derivation 审计，但不会仅因出现在工作区就进入产物目录；Agent 必须调用 `declare_artifact`，用户上传与 MCP 下载由控制面在入口处注册；远程文件必须先显式复制到本地 Workspace，再声明 Artifact，复制本身不自动声明。
 
-## Web 工具（恒有）
+## 产品 Web 工具（native 默认可见；JiuwenSwarm 可使用自有工具）
 
 | 工具 | 参数 | 行为与边界 |
 |---|---|---|
 | `web_search` | `query`（1-2000 字符） | 自动聚合搜索：先试已配置 key 的付费 Provider，再试开启的免费引擎，取第一个出结果的；返回片段与 URL，不代表已读全文 |
 | `web_fetch` | `url`（完整 http(s) URL） | 抽取指定公开网页；拒绝凭证 URL、内网/环回地址；不做跨 Provider 降级 |
 
-两者均由 Node 发起独立权限检查，写 CAS 快照和 `WebInvocation` 审计，厂商调用也在 Node 进程内完成。详见 [web-tools.md](web-tools.md)。
+选择这两个产品工具时，由 Node 发起权限检查、写 CAS 快照和 `WebInvocation` 审计，并在进程内调用厂商。详见 [web-tools.md](web-tools.md)。
 
 ## 编排工具
 
 | 工具 | 出现条件 | 参数要点 |
 |---|---|---|
-| `update_plan` | Agent run 期间始终可用 | 完整替换的 `plan` 快照（0–20 项，每项包含 `step` 与状态），以及可选 `explanation`；空列表表示清空计划 |
+| `update_plan` | native Agent run，或设置 `SCIENCE_AGENT_JIUWENSWARM_PLANNING=update_plan` 的 JiuwenSwarm run | 完整替换的 `plan` 快照（0–20 项，每项包含 `step` 与状态），以及可选 `explanation`；空列表表示清空计划 |
 | `task` | 主运行注入（子 Agent 内不可再派生） | `description`（≤80 字符）、`prompt`（≤20000）、可选 `brief`（Brief v1 契约，见 [subagent-orchestration.md](../developer-docs/subagent-orchestration.md#41-subagent-brief-v1-契约)）、`inputPaths`（≤50）、`max_turns`（≤300）、`timeout_seconds`（≤3600）、`specialistId`、`tools`（白名单，≤32）；同轮多次调用可并行 |
 | `query_graph` | 在 System Settings 中启用 ScienceMemory | `query`：跨会话记忆图的大小写不敏感子串搜索，返回 `{hits, total, truncated}` |
 

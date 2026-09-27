@@ -13,10 +13,11 @@
 
 ## Agent Runtime
 
+- [Agent 后端参考](../reference/agent-backends.md) — 当前 JiuwenSwarm 默认值和 native 专属边界。
 - [Native Agent 后端](agent-backend.md) — native executor 的循环、模型、工具、超时和与 JiuwenSwarm 的共同语义。
-- [Runtime Core 边界](runtime-core.md) — 最底层领域无关 runtime 合同。
-- [动态上下文组装](context-assembly.md) — contributor、预算、trace 和依赖边界。
-- [上下文组装示例](context-assembly-examples.md) — 生产组装路径生成的模型输入示例。
+- [Runtime Core 边界](runtime-core.md) — native executor 的底层合同。
+- [动态上下文组装](context-assembly.md) — native contributor、预算、trace 和依赖边界。
+- [上下文组装示例](context-assembly-examples.md) — native 路径生成的模型输入示例。
 - [Session 轨迹与模型上下文](session-trajectory.md) — trajectory、固定 context/state 和只读投影。
 - [子 Agent 编排](subagent-orchestration.md) — 主/子 Agent 契约、handoff、guardrails 和失败语义。
 

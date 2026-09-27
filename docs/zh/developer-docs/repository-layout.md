@@ -151,8 +151,8 @@ pnpm architecture:check
 
 | 场景 | 入口 |
 | --- | --- |
-| 本地 native | `scripts/start-stack.sh --mode local` |
-| 本地 JiuwenSwarm | `scripts/start-stack.sh --mode local --jiuwenswarm` |
+| 本地 JiuwenSwarm（默认） | `scripts/start-stack.sh --mode local` |
+| 本地 native | `scripts/start-stack.sh --mode local --no-jiuwenswarm` |
 | Docker | `scripts/start-stack.sh --mode docker` |
 | API dev | `pnpm dev` |
 | 全仓 build | `pnpm build` |

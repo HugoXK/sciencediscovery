@@ -20,6 +20,12 @@ set -a && source .env && set +a
 | `SCIENCE_AGENT_LOG_DIR` | `<数据目录>/logs` | 可选日志目录覆盖；通常保持默认以随数据目录持久化 |
 | `SCIENCE_AGENT_LOG_MAX_BYTES` | `10485760` | 单个类别日志滚动前的最大字节数 |
 | `SCIENCE_AGENT_LOG_BACKUP_COUNT` | `5` | 每个类别保留的滚动历史文件数 |
+| `SCIENCE_AGENT_EXECUTOR` | 启动器默认为 `jiuwenswarm` | 可选 `jiuwenswarm` 或 `native`；绕过启动器直接启动 API 且未设置时默认 native。详见 [Agent 后端](agent-backends.md)。 |
+| `SCIENCE_AGENT_JIUWENSWARM_PROMPT` | `prepend` | JiuwenSwarm 提示词模式；`replace` 改用产品提示词。 |
+| `SCIENCE_AGENT_JIUWENSWARM_TOOLS` | `jiuwenswarm` | JiuwenSwarm 工具与产品工具；`ours` 改用产品工具集。 |
+| `SCIENCE_AGENT_JIUWENSWARM_PLANNING` | `todo` | JiuwenSwarm todo；`update_plan` 改用产品规划工具。 |
+| `SCIENCE_AGENT_JIUWENSWARM_SUBAGENTS` | `task` | 平台 task 桥接（子运行仍使用 Swarm）；`jiuwenswarm` 改用 Swarm 原生子代理。 |
+| `SCIENCE_AGENT_JIUWENSWARM_SKILLS` | `jiuwenswarm` | 默认提示词与工具模式下将选中技能安装给 Swarm；`ours` 改用产品加载方式。 |
 | `SCIENCE_AGENT_GATEWAY_IDLE_TIMEOUT_MS` | `240000` | 初始 Agent 无响应上限：无流式输出或进度（`0` = 无限） |
 | `SCIENCE_AGENT_GATEWAY_TURN_TIMEOUT_MS` | `0` | 初始 Agent 单轮总时长上限（`0` = 无限） |
 | `SCIENCE_AGENT_MAX_PARALLEL_TOOL_CALLS` | `10` | 单个 Agent Step 中显式声明为并发安全的工具最大并发数；必须为正整数，`1` 表示工具串行执行 |
@@ -36,6 +42,7 @@ set -a && source .env && set +a
 | `SCIENCE_AGENT_NPM_REGISTRY` | 空（官方 registry） | 构建步骤的 npm 镜像，仅作用于 `start-stack.sh` 内的 `pnpm install --registry`，不改用户/全局 npm 配置；如华为云 `https://mirrors.huaweicloud.com/repository/npm/` |
 | `SCIENCE_AGENT_PYPI_INDEX` | 空（PyPI 官方） | 构建步骤的 PyPI 镜像，仅作用于 `start-stack.sh` 内 `uv sync` 的 `UV_DEFAULT_INDEX`，不改用户/全局 uv 配置；如华为云 `https://mirrors.huaweicloud.com/repository/pypi/simple`。注意：`uv.lock` 记录 index 来源，设置镜像后 uv 会按镜像重新 resolve（版本仍受 `pyproject.toml` 约束但可能偏离 lock），脚本会自动备份并恢复 lockfile，工作区不会被改动 |
 | `SCIENCE_AGENT_MEMORY_GRAPH_HOST` | `127.0.0.1` | memory-graph 监听地址（服务进程使用） |
+| `SCIENCE_AGENT_MEMORY_GRAPH_AVAILABLE` | 源码/Docker 为 `1`，单文件启动器为 `0` | API 是否在新数据目录开放 ScienceMemory；sidecar 也必须运行。 |
 | `SCIENCE_AGENT_MEMORY_GRAPH_PORT` | `17674` | memory-graph 监听端口（服务进程使用） |
 | `SCIENCE_AGENT_MEMORY_GRAPH_URL` | `http://127.0.0.1:17674` | memory-graph 端点（API 客户端） |
 | `SCIENCE_AGENT_MEMORY_GRAPH_INTERNAL_TOKEN` | `sciencediscovery-memory-graph-local` | API→memory-graph token |
@@ -103,8 +110,10 @@ Compose 读取仓库根目录 `.env`（模板为 `.env.docker.example`），把�
 | `SCIENCE_AGENT_LOG_DIR` | `/app/data/logs` | 日志目录；保持默认即随数据目录持久化 |
 | `SCIENCE_AGENT_LOG_MAX_BYTES` | `10485760` | 单个类别日志滚动前的最大字节数 |
 | `SCIENCE_AGENT_LOG_BACKUP_COUNT` | `5` | 每个类别保留的滚动历史文件数 |
-| `SCIENCE_AGENT_CONTEXT_MODE` | `dynamic` | 上下文装配模式；`legacy` 与 `shadow` 仅用于调试和回归对比 |
-| `SCIENCE_AGENT_CONTEXT_PROMPT_BUDGET_CHARS`、`…_SECTION_MAX_CHARS`、`…_DATA_BUDGET_CHARS`、`…_ATTACHMENT_MAX_CHARS`、`…_CONTRIBUTED_MESSAGE_BUDGET_CHARS`、`…_MAX_CONTRIBUTED_MESSAGES`、`…_WINDOW_MESSAGES`、`…_WINDOW_ROUNDS`、`…_WINDOW_TOKENS` | 见 `.env.docker.example` | 上下文装配的预算与窗口，含义见[上下文装配](../../en/developer-docs/context-assembly.md) |
+| `SCIENCE_AGENT_EXECUTOR` | `jiuwenswarm` | 启动器选择的后端；`native` 可切回原生循环。 |
+| `SCIENCE_AGENT_JIUWENSWARM_PROMPT` / `SCIENCE_AGENT_JIUWENSWARM_TOOLS` / `SCIENCE_AGENT_JIUWENSWARM_PLANNING` / `SCIENCE_AGENT_JIUWENSWARM_SUBAGENTS` / `SCIENCE_AGENT_JIUWENSWARM_SKILLS` | `prepend` / `jiuwenswarm` / `todo` / `task` / `jiuwenswarm` | JiuwenSwarm 专属行为；详见 [Agent 后端](agent-backends.md)。Compose 会从 `.env` 转发这些变量。 |
+| `SCIENCE_AGENT_CONTEXT_MODE` | `dynamic` | 仅 native loop 的上下文装配模式；`legacy` 与 `shadow` 仅用于调试和回归对比。JiuwenSwarm 自行管理模型上下文。 |
+| `SCIENCE_AGENT_CONTEXT_PROMPT_BUDGET_CHARS`、`…_SECTION_MAX_CHARS`、`…_DATA_BUDGET_CHARS`、`…_ATTACHMENT_MAX_CHARS`、`…_CONTRIBUTED_MESSAGE_BUDGET_CHARS`、`…_MAX_CONTRIBUTED_MESSAGES`、`…_WINDOW_MESSAGES`、`…_WINDOW_ROUNDS`、`…_WINDOW_TOKENS` | 见 `.env.docker.example` | 仅 native loop 的上下文装配预算与窗口，含义见[上下文装配](../developer-docs/context-assembly.md) |
 | `SCIENCE_AGENT_CONTEXT_TRACE` / `SCIENCE_AGENT_CONTEXT_TRACE_DIR` | `0` / `/app/data/context-traces` | 上下文装配追踪开关与输出目录 |
 | `SCIENCE_AGENT_RUNNER_TOKEN` | `sciencediscovery-runner-local` | API→runner token（仅容器回环） |
 | `SCIENTIFIC_ENVS` | `1` | 托管 Python/R 环境与持久内核；首次启动自动创建 starter Python |
@@ -120,7 +129,7 @@ Compose 读取仓库根目录 `.env`（模板为 `.env.docker.example`），把�
 | `SCIENCE_AGENT_USAGE_EXCHANGE_RATE_TTL_MS` | `21600000` | 用量看板汇率缓存 TTL，默认 6 小时 |
 | `SCIENCE_AGENT_USAGE_EXCHANGE_RATE_TIMEOUT_MS` | `2500` | 用量看板汇率请求超时 |
 
-镜像内固定的值不经 `.env` 修改：`SCIENCE_AGENT_DATA_DIR=/app/data`、`SCIENCE_AGENT_HOST=0.0.0.0`、`SCIENCE_AGENT_PORT=4310`、`SCIENCE_AGENT_RUNNER_HOST=127.0.0.1`、`SCIENCE_AGENT_RUNNER_PORT=4311`、`SCIENCE_AGENT_RUNNER_URL`，以及镜像内 Python 环境、模型目录快照与 micromamba 种子的路径。API 在容器内监听 `0.0.0.0:4310`，runner `4311` 保持在容器回环，对外只发布 API 端口。本地模式的 `SCIENCE_AGENT_MICROMAMBA_BASE_URL` 在 Docker 中不需要：镜像已内置并播种固定版本的 micromamba，运行时不再下载。其余本地模式变量（如 `HTTP_PROXY`）未被转发，需要时通过 `docker-compose.override.yml` 追加到服务的 `environment` 块。
+镜像内固定的值不经 `.env` 修改：`SCIENCE_AGENT_DATA_DIR=/app/data`、`SCIENCE_AGENT_HOST=0.0.0.0`、`SCIENCE_AGENT_PORT=4310`、`SCIENCE_AGENT_RUNNER_HOST=127.0.0.1`、`SCIENCE_AGENT_RUNNER_PORT=4311`、`SCIENCE_AGENT_RUNNER_URL`，以及镜像内 Python 环境、模型目录快照与 micromamba 种子的路径。默认 JiuwenSwarm 模式下，adapter 在容器内监听 `0.0.0.0:4310`，API 移至容器内 `:4410`；native 模式下 API 直接监听 `:4310`。Runner `4311` 保持在容器回环，对外只发布 `4310`。本地模式的 `SCIENCE_AGENT_MICROMAMBA_BASE_URL` 在 Docker 中不需要：镜像已内置并播种固定版本的 micromamba，运行时不再下载。其余本地模式变量（如 `HTTP_PROXY`）未被转发，需要时通过 `docker-compose.override.yml` 追加到服务的 `environment` 块。
 
 ## 存储布局
 
@@ -141,7 +150,7 @@ Compose 读取仓库根目录 `.env`（模板为 `.env.docker.example`），把�
 | `.sciencediscovery-data/artifact-plans/`、`.sciencediscovery-data/artifact-jobs/`、`.sciencediscovery-data/artifact-extraction-jobs/` | 下载与 PDF 抽取任务状态 |
 | `.sciencediscovery-data/scientific-envs/`、`.sciencediscovery-data/runner-runtime/` | 托管 Python/R 环境与 runner 临时状态 |
 | `.sciencediscovery-data/skills/` | 本地托管技能包与 revision |
-| `.sciencediscovery-data/envs/paper/`、`.sciencediscovery-data/envs/gateway/` | uv 管理的 PDF worker 与 agent gateway Python 环境（可由运行脚本重建；非业务状态） |
+| `.sciencediscovery-data/envs/{paper,gateway,adapter,memory-graph,evolve}/` | 源码模式下可重建的 uv 服务环境；Docker 镜像将这些环境放在 `/opt/sciencediscovery/envs/` |
 | `.sciencediscovery-data/logs/{api,run,gateway,runner,memory-graph}.log` | 分级、按类别和大小滚动的运行日志；memory-graph 文件仅在功能启用时使用 |
 | 浏览器 local storage | 仅本地服务访问令牌——模型凭证从不离开后端 |
 

@@ -1,5 +1,7 @@
 # Runtime Core 边界
 
+本文描述进程内 **native executor** 的执行内核。JiuwenSwarm 运行自己的 Agent loop；共同的产品控制面见[运行时架构](architecture.md)。
+
 `@sciencediscovery/runtime-core` 是稳定、与领域无关的执行内核。它拥有 Agent Loop 状态机，
 只负责所有 Agent 执行共有的不变量：
 

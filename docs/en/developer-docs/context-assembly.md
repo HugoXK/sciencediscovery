@@ -1,5 +1,7 @@
 # Dynamic context assembly
 
+This page describes the **native Node executor**. The default JiuwenSwarm executor owns its model history, compaction and dynamic context; these native assembly modes are not a switch for JiuwenSwarm. See [Agent backends](../reference/agent-backends.md).
+
 ScienceDiscovery assembles model context entirely inside the Node process.
 `packages/runtime-core` depends only on the stable `ContextAssembler` port;
 prompt policy, dynamic contributors, budgets, history windows, and validation

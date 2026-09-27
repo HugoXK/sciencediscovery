@@ -167,4 +167,4 @@ LLM provider 的 TPM/RPM admission 目前没有接入 `ResourceRateLimiter`。�
 - `packages/data-source/src/resource-rate-limiter.test.ts`：并发上限、间隔 pacing、FIFO、队列满、排队超时、取消出队、释放幂等、冷却，以及四个维度省略时的无限语义。
 - `packages/data-source/src/broker.test.ts`：governance 缺失状态透传、队列错误映射、`queueWaitMs` 审计、429 反馈冷却。
 - `packages/mcp-sources/src/public-biomed.test.ts`：arXiv 治理参数对齐条款、全部内建源显式队列与 pacing 保护。
-- `services/gateway/tests/test_mcp_api.py`、`test_public_biomed_mcp.py`：Retry-After 传播与解析。
+- `services/gateway/tests/test_public_biomed_mcp.py`：生物医学 MCP 侧的响应与错误处理。

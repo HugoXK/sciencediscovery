@@ -49,6 +49,8 @@ NDJSON export.
 
 ## Components and data flow
 
+The diagram and `ProviderModelClient.invoke` details below describe the **native recorder path**. JiuwenSwarm model calls travel through the adapter and API model gateway and are recorded by `jiuwenswarm-trajectory.ts`; its flattened system prompt does not provide the native context-section provenance. See [Agent backends](../reference/agent-backends.md).
+
 ```text
 NativeAgent / AgentVersionRecorder ── existing SessionStore Run-event JSONL
                                   │ body / reasoning / tool events + evidence

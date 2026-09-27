@@ -1,5 +1,7 @@
 # Skill Progressive Disclosure
 
+The staged-package and progressive-load path below describes the **native executor**. By default, JiuwenSwarm installs selected Skills for `skill_tool`, with `read_skill` and `read_skill_resource` as fallbacks; see [Agent backends](../reference/agent-backends.md).
+
 This page explains how a model discovers, reads, and audits Agent Skills during a run. Selected Skills are staged into the sandbox as complete frozen packages, and the prompt still stays light by carrying metadata and paths rather than content.
 
 ## Design goals

@@ -185,7 +185,7 @@ docker compose build \
 - 默认只应发布到 `127.0.0.1`；
 - 镜像不包含用户 API token、模型凭据或宿主数据目录内容；
 - starter Python/R 环境与 conda package cache 不随镜像完整预装，首次创建仍可能需要软件包源；
-- Docker 模式下某些独立 Python sidecar 能力若未被镜像和启动脚本包含，会表现为不可用，应以 `/health` 和当前版本文档为准。
+- 镜像包含 adapter、memory-graph 和 evolve 的 Python 环境；启动脚本按需启动相应服务。实际可用状态以 `/health` 为准。
 
 ## Ascend NPU
 

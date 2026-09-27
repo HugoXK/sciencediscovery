@@ -1,5 +1,7 @@
 # Runtime Core boundaries
 
+This page describes the in-process **native executor** kernel. JiuwenSwarm runs its own agent loop; the shared product control plane is described in [Runtime architecture](architecture.md).
+
 `@sciencediscovery/runtime-core` is the stable, domain-neutral execution kernel.
 It owns the Agent Loop state machine and only the invariants common to every
 agent execution:

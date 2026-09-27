@@ -5,7 +5,7 @@
 ## 命令
 
 ```text
-ScienceDiscovery serve [选项]        启动 Web UI、控制 API 与沙箱 runner
+ScienceDiscovery serve [选项]        启动 Web UI、API、沙箱 runner 与默认的 JiuwenSwarm/adapter
 ScienceDiscovery run [输入] [选项]    作为命令行客户端连接一个已运行的 serve，执行 Agent 任务
 ScienceDiscovery extract --to <目录>  只解包内嵌运行时，不启动
 ScienceDiscovery version             打印版本及内置 Node / CPython / micromamba 版本

@@ -39,9 +39,8 @@ createNativeAgent   createJiuwenSwarmAgentFactory
 
 `create-agent-run.ts` selects the executor from `jiuwenSwarmConfigFromEnv()`.
 
-- local source defaults to native;
-- local `--jiuwenswarm` selects JiuwenSwarm;
-- Docker/release defaults to JiuwenSwarm;
+- local source, Docker, and release launchers default to JiuwenSwarm;
+- local `--no-jiuwenswarm` selects native;
 - tests may inject a double with `bindings.createAgent`.
 
 `createAgentRun` should remain executor-neutral. It maps `AgentProfile`, Workspace bindings, tool policy, budgets, context contributors, versioning authority, and abort lifecycle into one `AgentRunHandle`.

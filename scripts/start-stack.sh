@@ -18,19 +18,17 @@
 # its prebuilt image and bind-mounted runtime paths. Both modes reuse the same
 # process ordering, health waits, and shutdown handling.
 #
-# The agent loop runs on JiuwenSwarm in packaged and Docker deployments (see
-# docs/en/getting-started/deployment.md):
-# in local mode, install it once with `scripts/jiuwenswarm.sh setup`, then pass
-# --jiuwenswarm below.
+# Agent turns run on JiuwenSwarm by default in every deployment mode. In local
+# mode, install it once with `scripts/jiuwenswarm.sh setup` before starting.
 set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: ./scripts/start-stack.sh --mode local --jiuwenswarm [--no-build] [--no-node-build]
+Usage: ./scripts/start-stack.sh --mode local [--no-jiuwenswarm] [--no-build] [--no-node-build]
        ./scripts/start-stack.sh --mode docker [--no-jiuwenswarm] [--no-build]
 
   --mode local    read .env, optionally install/build, and use data/envs
-                  (native loop by default; --jiuwenswarm opts in)
+                  (JiuwenSwarm by default; --no-jiuwenswarm opts out)
   --mode docker   use the prebuilt image environments and container checks
                   (JiuwenSwarm by default, since the image always bakes it
                   in; --no-jiuwenswarm opts out)
@@ -38,20 +36,18 @@ Usage: ./scripts/start-stack.sh --mode local --jiuwenswarm [--no-build] [--no-no
   --no-node-build skip only the Node install/build; still provision the Python
                   service environments, whose editable installs record absolute
                   paths and cannot be prepared elsewhere
-  --jiuwenswarm   run agent turns on JiuwenSwarm: puts the adapter in front of
-                  the API (SCIENCE_AGENT_ADAPTER=1), selects the executor
+  --jiuwenswarm   run agent turns on JiuwenSwarm (already the default):
+                  puts the adapter in front of the API
+                  (SCIENCE_AGENT_ADAPTER=1), selects the executor
                   (SCIENCE_AGENT_EXECUTOR=jiuwenswarm) and starts the
                   JiuwenSwarm instance if it is not already running. In local
                   mode, install JiuwenSwarm once with scripts/jiuwenswarm.sh
-                  setup first; the Docker image bakes it in and already
-                  defaults to it, so this flag is redundant there — first
+                  setup first; the Docker image bakes it in — first
                   start still creates the instance under the bind-mounted
                   data directory. See docs/en/getting-started/deployment.md.
   --no-jiuwenswarm
-                  run agent turns on the native loop instead. Only meaningful
-                  in Docker mode, where it overrides the default; local mode
-                  is already native unless --jiuwenswarm is passed. Also
-                  settable as SCIENCE_AGENT_EXECUTOR=native.
+                  run agent turns on the native loop instead in either mode.
+                  Also settable as SCIENCE_AGENT_EXECUTOR=native.
 
 Environment:
   SCIENCE_DISCOVERY_HEALTH_TIMEOUT_SECONDS
@@ -66,11 +62,8 @@ mode_seen=0
 no_build=0
 no_node_build=0
 use_jiuwenswarm=0
-# Tracks whether the operator made a deliberate choice (flag or a
-# pre-set SCIENCE_AGENT_EXECUTOR), so the Docker-mode default below never
-# overwrites one.
-jiuwenswarm_explicit=0
-[[ -n "${SCIENCE_AGENT_EXECUTOR:-}" ]] && jiuwenswarm_explicit=1
+# Keep the CLI choice until after local .env is read, so a flag wins over it.
+backend_option=""
 while [[ "$#" -gt 0 ]]; do
   case "$1" in
     --mode)
@@ -104,15 +97,11 @@ while [[ "$#" -gt 0 ]]; do
       shift
       ;;
     --jiuwenswarm)
-      use_jiuwenswarm=1
-      jiuwenswarm_explicit=1
-      export SCIENCE_AGENT_ADAPTER=1 SCIENCE_AGENT_EXECUTOR=jiuwenswarm
+      backend_option=jiuwenswarm
       shift
       ;;
     --no-jiuwenswarm)
-      use_jiuwenswarm=0
-      jiuwenswarm_explicit=1
-      unset SCIENCE_AGENT_ADAPTER SCIENCE_AGENT_EXECUTOR
+      backend_option=native
       shift
       ;;
     -h|--help)
@@ -133,19 +122,24 @@ if [[ "$mode" != "local" && "$mode" != "docker" ]]; then
   exit 2
 fi
 
-# The Docker image bakes JiuwenSwarm and the adapter in unconditionally (see
-# Dockerfile), so — unlike local mode, which stays on the native loop unless
-# asked — Docker mode defaults to running on JiuwenSwarm too, the same
-# default the release binary uses. --no-jiuwenswarm (or a pre-set
-# SCIENCE_AGENT_EXECUTOR) opts back out.
-if [[ "$mode" == "docker" && "$jiuwenswarm_explicit" -eq 0 ]]; then
-  use_jiuwenswarm=1
-  export SCIENCE_AGENT_ADAPTER=1 SCIENCE_AGENT_EXECUTOR=jiuwenswarm
-fi
-
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repository_root="$(cd -- "$script_dir/.." && pwd)"
 cd "$repository_root"
+
+configure_backend() {
+  local selected="${backend_option:-${SCIENCE_AGENT_EXECUTOR:-jiuwenswarm}}"
+  case "$selected" in
+    jiuwenswarm)
+      use_jiuwenswarm=1
+      export SCIENCE_AGENT_ADAPTER=1 SCIENCE_AGENT_EXECUTOR=jiuwenswarm
+      ;;
+    native)
+      use_jiuwenswarm=0
+      unset SCIENCE_AGENT_ADAPTER SCIENCE_AGENT_EXECUTOR
+      ;;
+    *) echo "SCIENCE_AGENT_EXECUTOR must be jiuwenswarm or native, got $selected." >&2; exit 2 ;;
+  esac
+}
 
 pids=()
 health_attempts=50
@@ -284,6 +278,8 @@ prepare_local() {
     source .env
     set +a
   fi
+
+  configure_backend
 
   if [[ -n "${SCIENCE_DISCOVERY_DATA_DIR:-}" ]]; then
     if [[ -n "${SCIENCE_AGENT_DATA_DIR:-}" ]]; then
@@ -442,7 +438,7 @@ prepare_local() {
     fi
   fi
 
-  # Opt-in front door (SCIENCE_AGENT_ADAPTER=1): the Python adapter takes the
+  # Default JiuwenSwarm front door (SCIENCE_AGENT_ADAPTER=1): the adapter takes the
   # public port and proxies every route it has not migrated to the legacy API,
   # which moves to SCIENCE_AGENT_LEGACY_PORT (public port + 100 by default).
   if [[ "${SCIENCE_AGENT_ADAPTER:-0}" == "1" ]]; then
@@ -498,6 +494,7 @@ prepare_local() {
 }
 
 prepare_docker() {
+  configure_backend
   local envs_root="${SCIENCE_AGENT_ENVS_ROOT:-/opt/sciencediscovery/envs}"
   gateway_python="${SCIENCE_AGENT_GATEWAY_PYTHON_PATH:-$envs_root/gateway/bin/python}"
   memory_graph_python="${SCIENCE_AGENT_MEMORY_GRAPH_PYTHON_PATH:-$envs_root/memory-graph/bin/python}"
@@ -507,7 +504,7 @@ prepare_docker() {
   data_dir="$(absolute_from_repository "$data_dir")"
   export SCIENCE_AGENT_DATA_DIR="$data_dir"
 
-  # Opt-in front door (SCIENCE_AGENT_ADAPTER=1, set by --jiuwenswarm above):
+  # JiuwenSwarm front door (SCIENCE_AGENT_ADAPTER=1 by default):
   # same baked-environment convention as gateway_python, the adapter's own
   # venv the Dockerfile syncs into $envs_root/adapter.
   if [[ "${SCIENCE_AGENT_ADAPTER:-0}" == "1" ]]; then

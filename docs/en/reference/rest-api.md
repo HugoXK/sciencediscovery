@@ -6,6 +6,7 @@ This page records the key HTTP interfaces used by the current Web UI, based on `
 
 - Local default base and bind address: `http://127.0.0.1:4310`.
 - Docker default published address: `http://127.0.0.1:4310`.
+- With the default JiuwenSwarm backend, `:4310` is the adapter front door; it proxies product routes to the API on `:4410`. Authenticated `GET /agent/info` reports the executor and gateway reachability. In native mode, the API owns `:4310` directly. See [Agent backends](agent-backends.md).
 - `GET /health` and `GET /api/health` do not require authentication.
 - The MCP OAuth browser callback `GET /api/mcp/oauth/callback` does not use the local bearer token; it validates a pending, one-time OAuth state and exchanges the authorization code with PKCE.
 - Other `/api/*` requests require `Authorization: Bearer <SCIENCE_AGENT_AUTH_TOKEN>`. There is no default token: when the variable is unset the server generates a local service access token on its first start, prints the `Open to sign in` URL and token, and stores it in `<data-dir>/secrets/auth-token`.

@@ -39,9 +39,8 @@ createNativeAgent   createJiuwenSwarmAgentFactory
 
 `create-agent-run.ts` 根据 `jiuwenSwarmConfigFromEnv()` 选择 executor。
 
-- 本地源码默认 native；
-- 本地 `--jiuwenswarm` 使用 JiuwenSwarm；
-- Docker / 发行包默认 JiuwenSwarm；
+- 本地源码、Docker 和发行包启动器均默认使用 JiuwenSwarm；
+- 本地 `--no-jiuwenswarm` 使用 native；
 - 测试也可以通过 `bindings.createAgent` 注入替身。
 
 `createAgentRun` 本身不应拥有 executor-specific loop policy。它负责把 `AgentProfile`、Workspace bindings、tool policy、budget、context contributors、versioning authority 和 abort 生命周期映射成统一 `AgentRunHandle`。

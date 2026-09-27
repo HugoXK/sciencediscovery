@@ -54,7 +54,7 @@ The native loop's tool dispatch detects the same tool with identical arguments; 
 
 ## 6. History summarization and handoff
 
-Compaction happens inside the native loop (`services/api/src/native-agent/compaction.ts`). Within a run, older messages are summarized into one hidden checkpoint message, and the next compaction merges the previous summary forward rather than stacking layers; see [agent-backend.md](agent-backend.md) §7. There is only one summarization layer, `finalMessages` controls cross-run handoff with no extra pre-summarization, and non-droppable boundaries live in `runContract`.
+Compaction happens inside the native loop (`packages/context/src/compaction.ts`). Within a run, older messages are summarized into one hidden checkpoint message, and the next compaction merges the previous summary forward rather than stacking layers; see [agent-backend.md](agent-backend.md) §7. There is only one summarization layer, `finalMessages` controls cross-run handoff with no extra pre-summarization, and non-droppable boundaries live in `runContract`.
 
 ## 7. Child workspace
 
@@ -75,7 +75,7 @@ Shared state and re-nesting would add orchestration power but require a shared c
 - `packages/workspace/src/workspace.ts`
 - `packages/orchestration/src/subagents.ts`, `run-profile.ts`
 - `services/api/src/runs/index.ts`
-- `services/api/src/native-agent/index.ts`, `compaction.ts`
+- `services/api/src/native-agent/index.ts`, `packages/context/src/compaction.ts`
 - `services/runner/src/executor.ts`
 
 ## 10. Agent-scoped audit snapshots

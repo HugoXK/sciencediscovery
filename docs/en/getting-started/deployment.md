@@ -111,6 +111,8 @@ scripts/jiuwenswarm.sh setup
 ./scripts/start-stack.sh --mode local
 ```
 
+Source mode now starts JiuwenSwarm by default. To run the older native Node loop instead, use `./scripts/start-stack.sh --mode local --no-jiuwenswarm` or set `SCIENCE_AGENT_EXECUTOR=native` in `.env`. See [Agent backends](../reference/agent-backends.md) for behavior differences and an active-backend check.
+
 The first run installs dependencies and builds the project, so it needs network access.
 
 After a successful build, later starts can use:

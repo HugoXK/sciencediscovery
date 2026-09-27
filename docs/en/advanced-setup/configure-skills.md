@@ -37,6 +37,7 @@ Open the imported Skill and inspect its name, instructions, and supporting files
 Library presence and runtime enablement are separate:
 
 - **JiuwenSwarm backend**: inspect runtime skills and switches in the JiuwenSwarm Skills view. ScienceDiscovery skills are imported before runs. These switches apply across sessions, not as individual Specialist allowlists. Restore the runtime connection first if it is unavailable.
+- With the default JiuwenSwarm prompt and tools, the Agent loads an imported Skill through `skill_tool`. If that loader fails, `read_skill` and `read_skill_resource` provide the product fallback. See [Agent backends](../reference/agent-backends.md).
 - **Backends with Project / Session skill selection**: `all` permits installed skills; `selected` requires adding the new Skill to the effective allowlist. Check whether Session settings override the Project.
 
 Installation does not establish that the Agent read the Skill. Create a test session, upload a small CSV, and explicitly request `csv-quality-check`. Select the matching skill suggestion if offered by the composer. Inspect execution records and artifacts rather than relying on the response mentioning its name.

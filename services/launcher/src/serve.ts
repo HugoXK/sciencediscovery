@@ -169,6 +169,9 @@ export function planServices(context: ServicePlanContext): ServiceDefinition[] {
     // payload has no provisioned venv, so this is the bundled CPython whose
     // own site-packages already carry the gateway package.
     SCIENCE_AGENT_GATEWAY_PYTHON_PATH: pythonBinary,
+    // The single-file launcher supervises Runner/API and, in Swarm mode,
+    // JiuwenSwarm/adapter. It does not start the memory-graph sidecar.
+    SCIENCE_AGENT_MEMORY_GRAPH_AVAILABLE: baseEnv.SCIENCE_AGENT_MEMORY_GRAPH_AVAILABLE?.trim() || "0",
     SCIENCE_AGENT_HOST: settings.host,
     SCIENCE_AGENT_PORT: String(apiPort),
     SCIENCE_AGENT_RUNNER_TOKEN: runnerEnvironment.SCIENCE_AGENT_RUNNER_TOKEN,

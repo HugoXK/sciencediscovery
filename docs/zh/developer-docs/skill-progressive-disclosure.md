@@ -1,5 +1,7 @@
 # 技能渐进式披露
 
+下述技能包放入沙箱并渐进加载的流程描述 **native executor**。JiuwenSwarm 默认把选中技能安装给 `skill_tool`，并在加载失败时回退到 `read_skill` / `read_skill_resource`；见 [Agent 后端](../reference/agent-backends.md)。
+
 本文说明 Agent Skills 在一轮运行中如何被模型发现、读取和审计。本次运行已选的技能会以**完整技能包**在沙箱启动前放入固定目录；系统提示依旧保持轻量，只携带 metadata 和路径，而不是正文。
 
 ## 设计目标

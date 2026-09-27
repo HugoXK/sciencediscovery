@@ -55,7 +55,7 @@
 
 `services/api/src/agent-run/create-agent-run.ts` 是公共 seam。
 
-本地源码默认 native；Docker/发行包默认 JiuwenSwarm。
+本地源码、Docker 和发行包启动器均默认使用 JiuwenSwarm；需要 native executor 时使用 `--no-jiuwenswarm`。
 
 ### 2.3 Runner 只负责执行
 

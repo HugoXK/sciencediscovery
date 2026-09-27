@@ -61,6 +61,8 @@ scripts/jiuwenswarm.sh setup
 ./scripts/start-stack.sh --mode local
 ```
 
+此命令默认启动 JiuwenSwarm；行为与 native 切换方法见 [Agent 后端](../reference/agent-backends.md)。
+
 第一次执行会安装和构建所需组件，因此需要联网，耗时也会比后续启动更长。
 
 如果你已经完成过构建，之后可以用：

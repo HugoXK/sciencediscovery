@@ -61,6 +61,8 @@ scripts/jiuwenswarm.sh setup
 ./scripts/start-stack.sh --mode local
 ```
 
+This starts JiuwenSwarm by default. See [Agent backends](../reference/agent-backends.md) for its behavior and the native option.
+
 The first run installs and builds the required components, so it needs network access and takes longer than later starts.
 
 After the project has already been built, later starts can use:

@@ -1,5 +1,7 @@
 # 上下文组装示例
 
+以下示例只运行 **Node native executor**。JiuwenSwarm 单独组装模型上下文，见 [Agent 后端](../reference/agent-backends.md)。
+
 这些示例由当前 Agent 系统通过真实的进程内路径生成：
 
 ```text

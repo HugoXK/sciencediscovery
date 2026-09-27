@@ -13,10 +13,11 @@ These pages are for developers and code agents modifying ScienceDiscovery core c
 
 ## Agent Runtime
 
+- [Agent backend reference](../reference/agent-backends.md) — current JiuwenSwarm defaults and native-only boundaries.
 - [Native Agent backend](agent-backend.md) — native loop, models, tools, deadlines, and semantics shared with JiuwenSwarm.
-- [Runtime Core boundaries](runtime-core.md) — lowest-level domain-neutral runtime contracts.
-- [Dynamic context assembly](context-assembly.md) — contributors, budgets, traces, dependency boundary.
-- [Context assembly examples](context-assembly-examples.md) — example model inputs from the production assembly path.
+- [Runtime Core boundaries](runtime-core.md) — lowest-level contracts of the native executor.
+- [Dynamic context assembly](context-assembly.md) — native contributors, budgets, traces, dependency boundary.
+- [Context assembly examples](context-assembly-examples.md) — native model input examples.
 - [Session trajectory and model context](session-trajectory.md) — trajectories, frozen context/state, read-only projections.
 - [Subagent orchestration](subagent-orchestration.md) — parent/child contracts, handoff, guardrails, failure semantics.
 

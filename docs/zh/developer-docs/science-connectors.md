@@ -52,19 +52,21 @@ Agent 并不能直接看到全部 MCP 工具。从 connector 定义到进入模�
 
 ### 3.2 模型可见性(Node 原生 loop 侧)
 
-延迟披露完全在 `services/api/src/native-agent/deferred-tools.ts` 内实现,细节见
+延迟工具的目录与晋升状态由 `packages/tools/src/deferred-tools.ts` 和 `registry.ts` 实现；下表描述 **native loop** 如何延迟披露，细节见
 [agent-backend.md](agent-backend.md) §6。
 
 | 机制 | 实现 | 行为 |
 |---|---|---|
 | 延迟目录组装 | `buildDeferredToolState` + `deferredToolsPromptSection` | 只要存在 deferred 工具,就建立目录、追加合成的 `tool_search` 工具,并在 system prompt 注入只含工具名的 `<available-deferred-tools>` 清单 |
-| schema 隐藏与调用拦截 | `hiddenDeferredNames` + `NativeAgent.visibleToolSpecs` / `executeToolCall` | 未晋升的 deferred 工具不进入模型请求的工具表;直接调用未晋升工具会被拦截,返回"先调 `tool_search`"的可重试错误结果 |
+| schema 隐藏与调用拦截 | `hiddenDeferredNames` + `ToolRegistry.visibleSpecs` / `execute` | 未晋升的 deferred 工具不进入模型请求的工具表;直接调用未晋升工具会被拦截,返回"先调 `tool_search`"的可重试错误结果 |
 | 晋升状态 | `DeferredToolState.promoted`(run 级) | 晋升在本次 run 内有效;目录带 `hash`,可用于检测工具改名或 schema 漂移 |
 | 关键词自动晋升 | `autoPromoteFromRouting` | 用户消息命中工具 `routing.keywords`(`mode: "prefer"`)时,在首轮模型调用前自动晋升优先级最高的最多 3 个,省去一次 `tool_search` 往返 |
 
 因此模型的视野是:内置工作区工具全量可见;MCP 工具初始只见名字,schema 经 `tool_search`
 晋升或路由自动晋升后按需暴露。而哪些 MCP 工具能进入名字清单,又先经过会话启用开关(步骤 3)
 和 catalog 可用性(步骤 2)两道过滤。
+
+JiuwenSwarm 在运行开始时固定工具表，后续不能再把新 schema 加进该表。因此 `jiuwenswarm-agent.ts` 会在移交工具表之前晋升全部 deferred 工具，并保留 `tool_search`；MCP schema 从一开始就会出现在 Swarm 模型工具表中，而不是等搜索后再披露。catalog 可用性与 Session 启用过滤仍然生效。
 
 ## 4. 首期数据源
 

@@ -212,6 +212,7 @@ describe("jiuwenswarm mode", () => {
     assert.equal(api?.env.SCIENCE_AGENT_PORT, "4310");
     assert.equal(api?.env.SCIENCE_AGENT_EXECUTOR, undefined);
     assert.equal(api?.env.SCIENCE_AGENT_ADAPTER_URL, undefined);
+    assert.equal(api?.env.SCIENCE_AGENT_MEMORY_GRAPH_AVAILABLE, "0");
     assert.equal(api?.healthUrl, "http://127.0.0.1:4310/health");
   });
 

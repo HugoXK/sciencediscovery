@@ -151,8 +151,8 @@ pnpm architecture:check
 
 | Scenario | Entry |
 | --- | --- |
-| local native | `scripts/start-stack.sh --mode local` |
-| local JiuwenSwarm | `scripts/start-stack.sh --mode local --jiuwenswarm` |
+| local JiuwenSwarm (default) | `scripts/start-stack.sh --mode local` |
+| local native | `scripts/start-stack.sh --mode local --no-jiuwenswarm` |
 | Docker | `scripts/start-stack.sh --mode docker` |
 | API dev | `pnpm dev` |
 | repository build | `pnpm build` |

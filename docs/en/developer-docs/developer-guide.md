@@ -53,7 +53,7 @@ Current executors:
 
 The shared seam is `services/api/src/agent-run/create-agent-run.ts`.
 
-Local source defaults to native; Docker/release defaults to JiuwenSwarm.
+Local source, Docker, and release launchers default to JiuwenSwarm. Use `--no-jiuwenswarm` for the native executor.
 
 ### 2.3 Runner only owns execution
 

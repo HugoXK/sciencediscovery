@@ -15,6 +15,8 @@ Session 标题旁的 **轨迹** 入口打开只读查看器。它将主 Agent、
 
 ## 组件与数据链路
 
+下图和后文的 `ProviderModelClient.invoke` 细节描述 **native recorder 路径**。JiuwenSwarm 的模型调用经 adapter 与 API 模型网关，由 `jiuwenswarm-trajectory.ts` 记录；其扁平系统提示词不提供 native 的上下文分段来源标注。见 [Agent 后端](../reference/agent-backends.md)。
+
 ```text
 NativeAgent / AgentVersionRecorder ── SessionStore 原有 Run 事件 JSONL
                                   │ 正文 / 思考 / 工具事件 + evidence

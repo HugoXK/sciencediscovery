@@ -35,7 +35,7 @@ Node `fetch` 调用可用 `proxyDispatcher(resolved, targetUrl)` 获得按目标
 
 当前接入路径：
 
-- LLM：Node 在每次 run 开始时解析模型策略，并按模型 base URL 把 environment 策略固化为最终 `url` 或 `direct`，再由 `native-agent/model-client.ts` 为该次请求固定一个 undici dispatcher。
+- LLM：Node 在每次 run 开始时解析模型策略，并按模型 base URL 把 environment 策略固化为最终 `url` 或 `direct`，再由 `packages/model/src/client.ts` 为该次请求固定 undici dispatcher。native run 直接调用该客户端；JiuwenSwarm 模型调用经 adapter 和 API 模型网关回到同一产品模型层。
 - WebSearch/Web fetch：`WebBroker` 每次调用解析一次 Web 策略，把解析结果直接交给进程内的 provider 层，由同一套共享 dispatcher 生效。
 - MCP/论文源：Node broker 按 `mcpServerId` 独立解析；内建 stdio MCP server 以进程环境覆盖连接上游。MCP 产物字节下载也复用同一 server 策略和 Node dispatcher。
 

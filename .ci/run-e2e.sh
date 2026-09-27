@@ -311,6 +311,11 @@ if [[ "$backend" == "jiuwenswarm" ]]; then
 fi
 
 stack_arguments=(--mode local)
+if [[ "$backend" == "jiuwenswarm" ]]; then
+  stack_arguments+=(--jiuwenswarm)
+else
+  stack_arguments+=(--no-jiuwenswarm)
+fi
 # A prepared workspace already carries the installed dependencies and the
 # build. Letting the stack redo them inside a guest makes pnpm try to purge a
 # modules directory that came from another store, which it refuses to do

@@ -2,7 +2,7 @@
 
 **Status: Current native executor implementation**
 
-This page describes only the **native executor** under `services/api/src/native-agent/`. It is not the only production path: local source defaults to native, while Docker/release defaults to JiuwenSwarm. See [Runtime architecture](architecture.md) for executor selection and the shared control plane.
+This page describes only the **native executor** under `services/api/src/native-agent/`. All launchers default to JiuwenSwarm; select native with `--no-jiuwenswarm` or `SCIENCE_AGENT_EXECUTOR=native`. See [Runtime architecture](architecture.md) for executor selection and the shared control plane.
 
 For the JiuwenSwarm path, use these sources of truth:
 

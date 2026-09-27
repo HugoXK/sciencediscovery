@@ -172,7 +172,7 @@ const JIUWENSWARM_SUBAGENT_LIFECYCLE_TOOLS = [
   ...JIUWENSWARM_SUBAGENT_TOOLS, "subagent_list", "subagent_send_input", "subagent_close", "subagent_resume",
 ] as const;
 
-/** Selected by SCIENCE_AGENT_EXECUTOR=jiuwenswarm; the native agent stays the default. */
+/** Selected by SCIENCE_AGENT_EXECUTOR=jiuwenswarm; direct API startup without that setting uses native. */
 export function jiuwenSwarmConfigFromEnv(env: NodeJS.ProcessEnv = process.env): JiuwenSwarmAgentConfig | undefined {
   if (env.SCIENCE_AGENT_EXECUTOR?.trim() !== "jiuwenswarm") return undefined;
   const adapterUrl = env.SCIENCE_AGENT_ADAPTER_URL?.trim();

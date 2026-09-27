@@ -111,6 +111,8 @@ scripts/jiuwenswarm.sh setup
 ./scripts/start-stack.sh --mode local
 ```
 
+源码模式现在也默认使用 JiuwenSwarm。需要旧版 Node 原生循环时，使用 `./scripts/start-stack.sh --mode local --no-jiuwenswarm`，或在 `.env` 中设置 `SCIENCE_AGENT_EXECUTOR=native`。行为差异和当前后端检查方法见 [Agent 后端](../reference/agent-backends.md)。
+
 第一次启动会安装依赖并构建项目，需要联网。
 
 后续已经构建完成时可以使用：

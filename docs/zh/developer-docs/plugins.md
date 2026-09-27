@@ -4,6 +4,8 @@ ScienceDiscovery 按能力归属组织 `packages/`，组件通过插件入口接
 
 本文描述当前实现。需求见 [Issue #80](https://gitcode.com/openJiuwen/sciencediscovery/issues/80)，相关运行原理见 [Agent 后端](agent-backend.md)、[子 Agent 编排](subagent-orchestration.md) 和 [CAS](cas.md)。
 
+下图展示 **native executor** 进程内的 AgentLoop 和 ContextAssembler。默认 JiuwenSwarm 后端仍由 API 装配产品插件和 ToolRegistry，但模型循环与上下文在 JiuwenSwarm 中运行，经 adapter 接入。见 [Agent 后端](../reference/agent-backends.md)。
+
 ## 1. 基座与插件如何协作
 
 ```text

@@ -2,7 +2,7 @@
 
 **Status: Current native executor implementation**
 
-本文只描述 `services/api/src/native-agent/` 的 **native executor**。它不是唯一生产路径：本地源码默认 native，而 Docker / 发行包默认 JiuwenSwarm。Executor 选择和共同控制面见[整体运行时架构](architecture.md)。
+本文只描述 `services/api/src/native-agent/` 的 **native executor**。所有启动器默认使用 JiuwenSwarm；用 `--no-jiuwenswarm` 或 `SCIENCE_AGENT_EXECUTOR=native` 选择 native。Executor 选择和共同控制面见[整体运行时架构](architecture.md)。
 
 JiuwenSwarm 路径的协议适配以：
 

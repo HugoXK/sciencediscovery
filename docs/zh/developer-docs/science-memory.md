@@ -1,6 +1,6 @@
 # 科学记忆（任务链与引用链）
 
-科学记忆是 ScienceDiscovery 的一个**实验性**可选功能（新数据目录默认开启；Docker 镜像不带记忆图谱服务，默认关闭），把一个会话的执行过程与论证过程存成一张图，默认以本地文本文件保存，也可选择存到 Neo4j。它的价值是让"这个结论是怎么来的"可被回溯与点击：从研究目标，到每一步任务、跑的代码、产出的文件，再到最终报告里的每一条带引用的断言（Claim）及其支撑证据。
+科学记忆是 ScienceDiscovery 的一个**实验性**可选功能（本地源码与 Docker 新数据目录均默认开启），把一个会话的执行过程与论证过程存成一张图，默认以本地文本文件保存，也可选择存到 Neo4j。它的价值是让"这个结论是怎么来的"可被回溯与点击：从研究目标，到每一步任务、跑的代码、产出的文件，再到最终报告里的每一条带引用的断言（Claim）及其支撑证据。
 
 图谱里两条核心链路：
 
@@ -8,6 +8,8 @@
 - **引用链（Citation chain）**：`报告 Artifact ←stated_in— Claim ←supports— Evidence ←extracts— Paper`，由 declare 工具显式写入，回答"报告里每句话引用了什么"。
 
 两者在 **Claim** 与 **Artifact** 节点交汇：一条 Claim 既被其支撑的 Evidence/Artifact 通过 `supports` 边指向，又被报告 Artifact 通过 `stated_in` 边记录；一个 Artifact 既是任务链里 `ToolCall -produces->` 的产物，又可能是引用链里被 `supports` 指向的对象。
+
+单文件启动器未托管 memory-graph sidecar，默认将 ScienceMemory 标为不可用。
 
 ## 1. 主要模块
 

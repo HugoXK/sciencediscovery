@@ -1,5 +1,7 @@
 # 动态上下文组装
 
+本文描述 **Node native executor**。默认的 JiuwenSwarm executor 自行管理模型历史、压缩与动态上下文；下述 native 装配模式不会切换 JiuwenSwarm 的实现。详见 [Agent 后端](../reference/agent-backends.md)。
+
 ScienceDiscovery 完全在 Node 进程内组装模型上下文。`packages/runtime-core` 只依赖稳定的
 `ContextAssembler` 端口；提示词策略、动态 contributor、预算、历史窗口和校验则由
 `packages/context` 实现。

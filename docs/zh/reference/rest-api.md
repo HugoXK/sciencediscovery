@@ -6,6 +6,7 @@
 
 - 本地模式默认基址与绑定地址：`http://127.0.0.1:4310`。
 - Docker 默认发布地址：`http://127.0.0.1:4310`。
+- 默认 JiuwenSwarm 后端下，`:4310` 是 adapter 对外入口，产品路由转发到 `:4410` 的 API；带令牌的 `GET /agent/info` 可查看 executor 与网关连通性。native 模式下 API 直接占用 `:4310`。详见 [Agent 后端](agent-backends.md)。
 - `GET /health` 与 `GET /api/health` 无需认证。
 - MCP OAuth 浏览器回调 `GET /api/mcp/oauth/callback` 不使用本地 bearer token，而是校验待处理的一次性 OAuth state，并通过 PKCE 交换授权码。
 - 其他 `/api/*` 请求必须携带 `Authorization: Bearer <SCIENCE_AGENT_AUTH_TOKEN>`。没有默认 token：该变量未设置时，服务端在首次启动生成本地服务访问令牌，打印 `Open to sign in` 链接与令牌，并保存在 `<数据目录>/secrets/auth-token`。

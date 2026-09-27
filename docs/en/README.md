@@ -29,6 +29,7 @@ This is the complete English documentation set.
 
 ## Reference
 
+- [Agent backends](reference/agent-backends.md) — current JiuwenSwarm defaults, native opt-out, tools, planning, Skills, and subagents.
 - [CLI](reference/cli.md) — command and behavior reference for `serve`, `run`, `extract`, and `version`.
 - [Built-in research capabilities](reference/builtin-research-capabilities.md)
 - [Configuration](reference/configuration.md)

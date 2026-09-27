@@ -5,7 +5,7 @@ This page records the command-line behavior of the ScienceDiscovery single-file 
 ## Commands
 
 ```text
-ScienceDiscovery serve [options]       Start the Web UI, control API, and sandbox runner
+ScienceDiscovery serve [options]       Start the Web UI, API, runner, and default JiuwenSwarm/adapter
 ScienceDiscovery run [input] [options] Run an Agent task against an already running serve
 ScienceDiscovery extract --to <dir>    Extract the embedded runtime without starting services
 ScienceDiscovery version               Print the build and embedded Node / CPython / micromamba versions

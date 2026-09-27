@@ -8,8 +8,8 @@ ScienceDiscovery keeps Project, Session, permission, tool implementation, Artifa
 
 | Executor | Selection | Where the loop runs | Public entry |
 | --- | --- | --- | --- |
-| Native | default in local source mode; or `SCIENCE_AGENT_EXECUTOR=native` | `services/api/src/native-agent/` | API directly on `:4310` |
-| JiuwenSwarm | default in Docker/release; local with `--jiuwenswarm` | JiuwenSwarm, bridged by the ScienceDiscovery adapter | adapter `:4310`, API moves to `:4410` |
+| Native | `--no-jiuwenswarm` or `SCIENCE_AGENT_EXECUTOR=native` | `services/api/src/native-agent/` | API directly on `:4310` |
+| JiuwenSwarm | default in local source, Docker, and release modes | JiuwenSwarm, bridged by the ScienceDiscovery adapter | adapter `:4310`, API moves to `:4410` |
 
 The important invariant is that **changing executor does not move authoritative product state out of the API**. `createAgentRun()` selects between `createNativeAgent` and `createJiuwenSwarmAgentFactory` through `defaultAgentFactory()`.
 
@@ -72,12 +72,12 @@ The adapter protocol and measured JiuwenSwarm behavior are documented in `servic
 
 | Mode | Default executor | Adapter | API port |
 | --- | --- | --- | --- |
-| `--mode local` | native | not started | 4310 |
-| `--mode local --jiuwenswarm` | JiuwenSwarm | 4310 | 4410 |
+| `--mode local` | JiuwenSwarm | 4310 | 4410 |
+| `--mode local --no-jiuwenswarm` | native | not started | 4310 |
 | `--mode docker` | JiuwenSwarm | 4310 | 4410 |
 | `--mode docker --no-jiuwenswarm` | native | not started | 4310 |
 
-The packaged single-file launcher follows the Docker default: JiuwenSwarm is the default executor.
+The packaged single-file launcher also defaults to JiuwenSwarm. `--jiuwenswarm` explicitly selects the default in either stack mode.
 
 Runner remains loopback-only on `:4311` by default in either executor.
 

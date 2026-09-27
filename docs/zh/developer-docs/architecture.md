@@ -8,8 +8,8 @@ ScienceDiscovery 的 Project、Session、权限、工具实现、Artifact、溯�
 
 | Executor | 选择方式 | Agent loop 在哪里 | 公共入口 |
 | --- | --- | --- | --- |
-| Native | 本地源码模式默认；或 `SCIENCE_AGENT_EXECUTOR=native` | `services/api/src/native-agent/` | API 直接监听 `:4310` |
-| JiuwenSwarm | Docker/发行包默认；本地用 `--jiuwenswarm` | JiuwenSwarm；ScienceDiscovery adapter 负责协议适配 | adapter `:4310`，API 退到 `:4410` |
+| Native | `--no-jiuwenswarm` 或 `SCIENCE_AGENT_EXECUTOR=native` | `services/api/src/native-agent/` | API 直接监听 `:4310` |
+| JiuwenSwarm | 本地源码、Docker 和发行包均默认 | JiuwenSwarm；ScienceDiscovery adapter 负责协议适配 | adapter `:4310`，API 退到 `:4410` |
 
 关键点：**切换 executor 不会把业务权威状态迁出 API。** `createAgentRun()` 通过 `defaultAgentFactory()` 在 `createNativeAgent` 和 `createJiuwenSwarmAgentFactory` 之间选择。
 
@@ -72,8 +72,8 @@ Adapter 的真实协议与已验证行为见 `services/adapter/README.md`。未�
 
 | 模式 | 默认 executor | Adapter | API 端口 |
 | --- | --- | --- | --- |
-| `--mode local` | native | 不启动 | 4310 |
-| `--mode local --jiuwenswarm` | JiuwenSwarm | 4310 | 4410 |
+| `--mode local` | JiuwenSwarm | 4310 | 4410 |
+| `--mode local --no-jiuwenswarm` | native | 不启动 | 4310 |
 | `--mode docker` | JiuwenSwarm | 4310 | 4410 |
 | `--mode docker --no-jiuwenswarm` | native | 不启动 | 4310 |
 

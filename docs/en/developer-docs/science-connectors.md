@@ -33,9 +33,9 @@ Three filters precede deferred model visibility.
 
 ### 3.2 Model visibility (native loop)
 
-Deferred disclosure lives entirely in `services/api/src/native-agent/deferred-tools.ts`; see [agent-backend.md](agent-backend.md) §6. When deferred tools exist, the loop builds a catalog, appends the synthetic `tool_search` tool, and injects a name-only `<available-deferred-tools>` list into the prompt. Unpromoted tools are filtered out of the wire tool table, and a direct call to one returns a retryable error telling the model to search first. Promotions are run-scoped, and the catalog carries a `hash` for detecting tool renames or schema drift. Keyword `prefer` routing automatically promotes up to the three highest-priority matches before the first model call.
+Deferred-tool registration lives in `packages/tools/src/deferred-tools.ts` and `registry.ts`; see [Agent backend](agent-backend.md) §6. In the native loop, a catalog adds synthetic `tool_search` and a name-only `<available-deferred-tools>` prompt section. Unpromoted schemas stay out of the model's tool table; direct calls to them return a retryable search-first error. Promotions are run-scoped, and keyword `prefer` routing can promote the three highest-priority matches before the first model call.
 
-Thus built-ins are fully visible; MCP names are visible but schemas appear only after search/automatic promotion, and only after catalog availability and Session enablement.
+JiuwenSwarm fixes its tool list when a run starts, so `jiuwenswarm-agent.ts` promotes every deferred tool before handing the table to Swarm. It keeps `tool_search` available, but MCP schemas are already in the model's table rather than being revealed later. In either executor, catalog availability and Session enablement still gate which MCP tools exist.
 
 ## 4. Initial sources
 

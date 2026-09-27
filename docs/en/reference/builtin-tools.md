@@ -2,6 +2,8 @@
 
 This page lists tools visible inside the agent loop. `createWorkspaceTools` in `packages/workspace` builds them, while `packages/tools` owns registration and dispatch policy; implementations live in the Node control plane while the gateway receives only names, descriptions, and JSON Schema. Except for tools marked always available, Session configuration controls visibility, and `toolPolicy` can further restrict a subagent to a whitelist.
 
+The tables describe **product-owned tools** and the native executor's visible names. In the default JiuwenSwarm backend, its own Web tools replace `web_search`/`web_fetch`, its todo tools replace `update_plan`, and the platform `task` bridge remains the default for subagents. Other Swarm tools may also appear. See [Agent backends](agent-backends.md) for switches and boundaries.
+
 ## Base tools (always available)
 
 | Tool | Parameters | Behavior and boundary |
@@ -22,20 +24,20 @@ Every tool result crosses one bound before model input. Ordinary non-self-bounde
 
 Shell execution requests `code` permission. Generated files retain diff and derivation audit but become Artifacts only after `declare_artifact`; remote files must first be explicitly copied to local storage. Uploads and governed MCP downloads retain their existing Artifact registration flow.
 
-## Web tools (always available)
+## Product Web tools (native default; JiuwenSwarm can use its own)
 
 | Tool | Parameters | Behavior and boundary |
 |---|---|---|
 | `web_search` | `query` (1–2000 characters) | Aggregates search engines — keyed paid providers first, then the enabled free engines — and returns the first that answers; snippets and URLs do not prove the page was read |
 | `web_fetch` | full public HTTP(S) `url` | Extracts one page; rejects credential URLs and private/loopback targets; no cross-provider fallback |
 
-Node performs permission, CAS, and `WebInvocation` audit, and calls the vendors in-process. See [Web tools](web-tools.md).
+When these product tools are selected, Node performs permission, CAS, and `WebInvocation` audit and calls vendors in-process. See [Web tools](web-tools.md).
 
 ## Orchestration tools
 
 | Tool | Condition | Key parameters |
 |---|---|---|
-| `update_plan` | Always available during an Agent run | complete replacement `plan` snapshot (0–20 items with `step` and status), plus optional `explanation`; an empty list clears it |
+| `update_plan` | Native Agent run, or JiuwenSwarm with `SCIENCE_AGENT_JIUWENSWARM_PLANNING=update_plan` | complete replacement `plan` snapshot (0–20 items with `step` and status), plus optional `explanation`; an empty list clears it |
 | `task` | main run; unavailable inside subagents | `description` ≤80, `prompt` ≤20000, optional Brief v1, up to 50 `inputPaths`, `max_turns` ≤300, `timeout_seconds` ≤3600, `specialistId`, and up to 32 whitelisted `tools`; same-turn calls may run in parallel |
 | `query_graph` | ScienceMemory enabled | case-insensitive cross-Session substring `query`; returns `{hits,total,truncated}` |
 

@@ -168,7 +168,7 @@ Important boundaries:
 - publish to `127.0.0.1` by default;
 - the image contains no user API tokens, model credentials, or host data-directory contents;
 - starter Python/R environments and the conda package cache are not fully preloaded, so first environment creation may still require package sources;
-- independent Python sidecar capabilities not included in the image/startup path are unavailable; use `/health` and current-version docs as the authority.
+- the image includes adapter, memory-graph, and evolve Python environments; the stack script starts their services as needed. Check `/health` for actual availability.
 
 ## Ascend NPU
 

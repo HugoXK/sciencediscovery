@@ -16,7 +16,7 @@ Module policies are `inherit` (LLM/Web/default MCP behavior), `none` (explicit d
 
 The Node control plane owns registry, policy, and ciphertext. `SessionStore.resolveProxy(policy)` yields storage-independent `direct`, `environment`, or `{mode:"url",url}`. Node fetch paths use `proxyDispatcher(resolved,targetUrl)` with protocol and NO_PROXY handling; subprocesses use `proxyEnvOverlay`. Logs may record mode/use but never the full URL.
 
-- LLM: Node resolves model policy at run start and projects environment policy against the base URL into final URL/direct, then pins a request-scoped undici dispatcher in `native-agent/model-client.ts`.
+- LLM: Node resolves model policy at run start and projects environment policy against the base URL into final URL/direct. `packages/model/src/client.ts` pins the request-scoped undici dispatcher. Native runs call that client directly; JiuwenSwarm model calls return through the adapter and API model gateway to the same product model layer.
 - Web: `WebBroker` resolves the Web policy once per call and hands the resolved result straight to the in-process provider layer, which dispatches through the same shared helper.
 - MCP/paper sources: Node resolves independently by `mcpServerId`; built-in stdio servers receive a process-environment overlay. Artifact-byte downloads reuse the server policy and Node dispatcher.
 
