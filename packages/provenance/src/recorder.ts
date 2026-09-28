@@ -917,7 +917,14 @@ export class ProvenanceRecorder {
       parentSubagentId: options.parentSubagentId,
       inputSourceFiles: shellSourceFileInputs,
     });
-    if (environmentSyncError) throw environmentSyncError;
+    if (environmentSyncError) {
+      // The execution itself succeeded (exit code 0); only the environment
+      // catalog bookkeeping failed. Failing the tool here would make the
+      // model retry and re-run the code, stacking a second execution record
+      // and duplicate artifact derivations. Record the run as it actually
+      // was and surface the bookkeeping problem as a warning instead.
+      console.warn("[provenance] environment catalog sync failed after a successful run:", environmentSyncError);
+    }
     return result;
   }
 
@@ -1090,7 +1097,14 @@ export class ProvenanceRecorder {
       parentSubagentId: options.parentSubagentId,
       inputSourceFiles: sourceFileInputs,
     });
-    if (environmentSyncError) throw environmentSyncError;
+    if (environmentSyncError) {
+      // The execution itself succeeded (exit code 0); only the environment
+      // catalog bookkeeping failed. Failing the tool here would make the
+      // model retry and re-run the code, stacking a second execution record
+      // and duplicate artifact derivations. Record the run as it actually
+      // was and surface the bookkeeping problem as a warning instead.
+      console.warn("[provenance] environment catalog sync failed after a successful run:", environmentSyncError);
+    }
     return result;
   }
 }
