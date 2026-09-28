@@ -110,19 +110,33 @@ export async function providerRequest(options: ProviderRequestOptions): Promise<
   options.signal?.addEventListener("abort", abortOuter, { once: true });
   const timer = setTimeout(() => controller.abort(), Math.max(1, options.timeoutMs));
   try {
-    const dispatcher = options.proxy ? proxyDispatcher(options.proxy, options.url) : undefined;
-    const response = await request(options.url, {
-      method: options.method ?? "GET",
-      ...(options.headers ? { headers: options.headers } : {}),
-      ...(options.body === undefined ? {} : { body: options.body }),
-      signal: controller.signal,
-      // The wall-clock budget above owns the deadline; per-phase undici timeouts
-      // would otherwise fire with a less specific error than the caller expects.
-      bodyTimeout: 0,
-      headersTimeout: Math.max(1, options.timeoutMs),
-      ...(dispatcher ? { dispatcher } : {}),
-    });
-    return { body: await readBounded(response.body), statusCode: response.statusCode };
+    // Follow up to 3 redirects: Bing redirects bing.com to a regional host
+    // (cn.bing.com) in some networks, and without following every free engine
+    // that redirects is counted as a failure. The initial URL is always a
+    // fixed public search-engine endpoint, not user-supplied.
+    let url = options.url;
+    for (let hop = 0; hop <= 3; hop += 1) {
+      const dispatcher = options.proxy ? proxyDispatcher(options.proxy, url) : undefined;
+      const response = await request(url, {
+        method: options.method ?? "GET",
+        ...(options.headers ? { headers: options.headers } : {}),
+        ...(options.body === undefined ? {} : { body: options.body }),
+        ...(options.method === "POST" && hop > 0 ? { body: undefined, method: "GET" } : {}),
+        signal: controller.signal,
+        bodyTimeout: 0,
+        headersTimeout: Math.max(1, options.timeoutMs),
+        ...(dispatcher ? { dispatcher } : {}),
+      });
+      if (response.statusCode < 300 || response.statusCode >= 400 || hop === 3) {
+        return { body: await readBounded(response.body), statusCode: response.statusCode };
+      }
+      const locationHeader = response.headers.location;
+      await response.body.dump?.().catch(() => undefined);
+      const location = Array.isArray(locationHeader) ? locationHeader[0] : locationHeader;
+      if (!location) return { body: "", statusCode: response.statusCode };
+      url = new URL(location, url).toString();
+    }
+    throw new Error("provider request exceeded its redirect budget");
   } finally {
     clearTimeout(timer);
     options.signal?.removeEventListener("abort", abortOuter);

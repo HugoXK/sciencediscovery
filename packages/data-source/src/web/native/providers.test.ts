@@ -264,6 +264,28 @@ test("the shared transport classifies status codes and bounds the body", async (
   );
 });
 
+test("the shared transport follows 3xx redirects to the final page", async (context) => {
+  // Bing redirects bing.com to a regional host in some networks; a 302 must
+  // not be reported as a failed engine.
+  const { providerRequest } = await import("./http.js");
+  const server = await localServer((request, response) => {
+    if (request.url === "/region") {
+      response.writeHead(302, { location: "/results" }).end();
+      return;
+    }
+    if (request.url === "/results") {
+      response.writeHead(200, { "content-type": "text/html" }).end("<html>final page</html>");
+      return;
+    }
+    response.writeHead(404).end();
+  });
+  context.after(() => server.close());
+
+  const followed = await providerRequest({ timeoutMs: 5_000, url: `${server.origin}/region` });
+  assert.equal(followed.statusCode, 200);
+  assert.match(followed.body, /final page/);
+});
+
 test("a hung endpoint is cut off by the operation budget", async (context) => {
   const { providerRequest, thrownErrorCode } = await import("./http.js");
   const server = await localServer((_request, response) => {
