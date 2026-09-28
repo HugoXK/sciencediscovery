@@ -45,7 +45,7 @@ from typing import Any, Iterator
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from . import events
 from .auth import require_internal_token
@@ -113,8 +113,18 @@ _running_lock = threading.Lock()
 
 
 class RunRequest(BaseModel):
-    search_id: str = Field(min_length=1, max_length=200)
+    #: search_id becomes a directory name under the candidate store, so it must
+    #: be a plain token: otherwise `..` (or a path separator) escapes the store
+    #: root and writes candidates outside it.
+    search_id: str = Field(min_length=1, max_length=200, pattern=r"^[A-Za-z0-9._-]+$")
     algorithm: str = "puct"
+
+    @field_validator("search_id")
+    @classmethod
+    def search_id_not_traversal(cls, value: str) -> str:
+        if value in {".", ".."}:
+            raise ValueError("search_id must not be a directory traversal name")
+        return value
     expansions: int = Field(default=6, ge=1, le=10_000)
     scorecard_hash: str = Field(min_length=1, max_length=200)
     #: The frozen scorecard body. Absent for engines that grade nothing.
