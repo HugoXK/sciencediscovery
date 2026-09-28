@@ -204,7 +204,10 @@ export function applyContextBudget<TMessage extends RuntimeMessage>(
   for (const message of newestFirst) {
     if (output.messages.length >= budget.maxContributedMessages) break;
     const content = typeof message.content === "string" ? message.content.length : 0;
-    if (messageCharacters + content > budget.contributedMessageBudgetCharacters) continue;
+    // Messages are considered newest-first, so once the newest message no
+    // longer fits, no older message should be admitted either: skipping it
+    // would silently drop the most recent turn while keeping stale context.
+    if (messageCharacters + content > budget.contributedMessageBudgetCharacters) break;
     output.messages.unshift(structuredClone(message));
     messageCharacters += content;
   }

@@ -107,3 +107,32 @@ test("resolved model facts seed the window while explicit environment remains au
     modelContextTokens: 200_000,
   }).modelContextTokens, 300_000);
 });
+
+test("budget never keeps older messages while dropping the newest one", () => {
+  // Newest message alone exceeds the message budget, older ones fit. The
+  // assembler must not keep stale older turns while the most recent turn
+  // silently disappears (F-13): hitting the budget from the newest side ends
+  // the pass.
+  const input: CollectedContext = {
+    attachments: [],
+    diagnostics: [],
+    messages: [
+      { role: "user", content: "old" },
+      { role: "user", content: "new" },
+      { role: "user", content: "this newest message is far too long for the budget" },
+    ],
+    sections: [],
+  };
+  const output = applyContextBudget(input, {
+    attachmentMaxCharacters: 0,
+    compactionPressurePercent: 80,
+    compactionRetainPercent: 16,
+    contributedMessageBudgetCharacters: 5,
+    dataBudgetCharacters: 0,
+    maxContributedMessages: 10,
+    promptBudgetCharacters: 100,
+    sectionMaxCharacters: 0,
+  });
+  assert.equal(output.messages.length, 0);
+  assert.ok(output.diagnostics.some((item) => item.code === "CONTEXT_MESSAGES_DROPPED"));
+});
