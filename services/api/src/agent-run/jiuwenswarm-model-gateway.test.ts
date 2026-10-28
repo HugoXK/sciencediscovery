@@ -891,6 +891,26 @@ test("gateway logs a classified summary when a custom streamer fails without wir
   } finally { await g.close(); }
 });
 
+test("a request that fails after the transport reported its wire keeps that evidence and adds its classification", async (t) => {
+  const lines: string[] = [];
+  t.mock.method(console, "info", (line: string) => lines.push(String(line)));
+  // The transport reports a record on its success path and then throws. The one
+  // line the request writes must keep the wire evidence and name the failure,
+  // instead of reading like a served turn.
+  const { streamer } = fakeStreamer(new ModelRequestError("Model request failed with status 503", 503), [], EMPTY_WIRE);
+  const g = await gateway(streamer);
+  try {
+    assert.equal((await post(g, { messages: [], stream: false })).status, 503);
+    const summaries = lines.filter(line => line.startsWith("[model-sse-summary] "))
+      .map(line => JSON.parse(line.slice("[model-sse-summary] ".length)));
+    assert.equal(summaries.length, 1, "one summary line per request");
+    assert.deepEqual(summaries[0].error, { classification: "provider_http" });
+    assert.equal(summaries[0].requestId, "model-abc", "the transport's evidence is kept");
+    assert.equal(summaries[0].upstreamRequestId, "upstream-9");
+    assert.equal(summaries[0].sseRecords, 3);
+  } finally { await g.close(); }
+});
+
 for (const kind of ['missing-id', 'done-only', 'valid-finish'] as const) test(`actual Chat gateway preserves strict completion/replay contract: ${kind}`, async () => {
   const { createServer } = await import('node:http');
   const server = createServer(async (req, res) => {

@@ -321,12 +321,9 @@ export async function startModelGateway(
         ...(pendingWire ?? { endpoint: modelEndpointIdentity(endpoint), model: endpoint.model }),
         gatewayRequestId: id,
         purpose,
-        ...(classification === undefined ? {} : {
-          error: pendingWire?.error ?? {
-            classification,
-            ...(classification === "provider_http" && pendingWire?.httpStatus !== undefined ? { httpStatus: pendingWire.httpStatus } : {}),
-          },
-        }),
+        // The transport's own classified record already carries its status;
+        // a local rejection only adds the class to the record it reported.
+        ...(classification === undefined ? {} : { error: pendingWire?.error ?? { classification } }),
       };
       try { console.info(`[model-sse-summary] ${JSON.stringify(record)}`); } catch { /* logging must not change the request */ }
     };
