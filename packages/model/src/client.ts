@@ -139,6 +139,14 @@ export interface ModelWireDiagnostics {
   sseParseErrors: number;
   hasText: boolean;
   hasToolCalls: boolean;
+  /**
+   * The provider streamed reasoning text for this request. Without it a turn
+   * that spent its whole budget thinking and a relay that sent an empty `stop`
+   * look identical (`hasText: false, finishReason: "stop"`), and they are not
+   * the same failure. Only a boolean: how much was thought is not needed to
+   * attribute the request and the text itself is never recorded.
+   */
+  hasReasoning: boolean;
   finishReason?: string;
   truncated: boolean;
   /** Classification of each attempt that was retried before the final one. */
@@ -165,6 +173,7 @@ function wireSummary(diagnostics: ModelWireDiagnostics | undefined): string {
     `sseRecords=${diagnostics.sseRecords}`,
     `sseParseErrors=${diagnostics.sseParseErrors}`,
     `finishReason=${diagnostics.finishReason ?? "unknown"}`,
+    `hasReasoning=${diagnostics.hasReasoning}`,
     `retries=${diagnostics.retries}`,
   ];
   return ` [${parts.join(" ")}]`;
@@ -371,6 +380,7 @@ class ModelWireRecorder {
   private sseRecords = 0;
   private sseParseErrors = 0;
   private textSeen = false;
+  private reasoningSeen = false;
   private toolSeen = false;
   private finish?: string;
   private truncated = false;
@@ -409,6 +419,8 @@ class ModelWireRecorder {
 
   text(delta: string): void { if (delta.trim()) this.textSeen = true; }
 
+  reasoning(delta: string): void { if (delta.trim()) this.reasoningSeen = true; }
+
   tool(delta: { id?: string; name?: string }): void { if (delta.id || delta.name) this.toolSeen = true; }
 
   finishReason(reason: string): void {
@@ -417,9 +429,10 @@ class ModelWireRecorder {
 
   markTruncated(): void { this.truncated = true; }
 
-  final(parts: { hasText: boolean; hasToolCalls: boolean; truncated?: boolean }): void {
+  final(parts: { hasText: boolean; hasToolCalls: boolean; truncated?: boolean; hasReasoning?: boolean }): void {
     this.textSeen ||= parts.hasText;
     this.toolSeen ||= parts.hasToolCalls;
+    this.reasoningSeen ||= Boolean(parts.hasReasoning);
     this.truncated ||= Boolean(parts.truncated);
   }
 
@@ -454,6 +467,7 @@ class ModelWireRecorder {
       sseParseErrors: this.sseParseErrors,
       hasText: this.textSeen,
       hasToolCalls: this.toolSeen,
+      hasReasoning: this.reasoningSeen,
       ...(this.finish === undefined ? {} : { finishReason: this.finish }),
       truncated: this.truncated,
       retryErrors: [...this.retryErrors],
@@ -899,7 +913,12 @@ async function streamOpenAiTurn(
     ...(variant === "qwen" && qwenReasoning !== undefined ? { reasoning: qwenReasoning } : {}),
     ...(variant === "minimax" && minimaxReasoning.length ? { reasoning_details: minimaxReasoning } : {}),
   };
-  recorder.final({ hasText: Boolean(text.trim()), hasToolCalls: toolCalls.length > 0, truncated });
+  recorder.final({
+    hasText: Boolean(text.trim()),
+    hasToolCalls: toolCalls.length > 0,
+    truncated,
+    hasReasoning: Boolean(deepseekReasoning.trim() || reasoningText(qwenReasoning) || reasoningText(minimaxReasoning)),
+  });
   return { assistantMessage, toolCalls, streamDiagnostics, completionObserved, ...(usage ? { usage } : {}), ...(truncated ? { truncated } : {}) };
 }
 
@@ -1007,6 +1026,9 @@ async function streamResponsesTurn(
     } else if (event.type === "response.output_item.done" && isRecord(event.item)) {
       const index = typeof event.output_index === "number" ? event.output_index : items.size;
       items.set(index, structuredClone(event.item));
+      // A provider may complete a reasoning item without streaming its deltas;
+      // the record still has to say the budget went to thinking.
+      if (event.item.type === "reasoning") recorder.reasoning(reasoningText(event.item.summary ?? event.item.content));
       if (event.item.type === "function_call") emitTool(index, event.item.call_id, event.item.name,
         typeof event.item.arguments === "string" ? event.item.arguments : "{}");
     } else if ((event.type === "response.completed" || event.type === "response.incomplete") && isRecord(event.response)) {
@@ -1326,6 +1348,7 @@ export async function streamModelTurn(
   const observed: ModelStreamCallbacks = {
     ...callbacks,
     onTextDelta: (delta) => { recorder.text(delta); callbacks.onTextDelta?.(delta); },
+    onThinkingDelta: (delta) => { recorder.reasoning(delta); callbacks.onThinkingDelta?.(delta); },
     onToolCallDelta: (delta) => { recorder.tool(delta); callbacks.onToolCallDelta?.(delta); },
   };
   const emit = (errorClass?: ModelWireErrorClass): ModelWireDiagnostics => {

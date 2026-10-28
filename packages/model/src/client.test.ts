@@ -29,6 +29,7 @@ import {
 import { installTestModelCatalog } from "./models-dev.fixture.js";
 
 import {
+  EmptyModelTurnError,
   isModelInputTooLargeError,
   modelEndpointIdentity,
   modelWireDiagnosticsOf,
@@ -213,6 +214,34 @@ test("model wire diagnostics classify retried attempts and preserve failed-reque
 });
 
 const policy: ModelClientPolicy = { maxRetries: 1, maxTokens: 1_024, requestTimeoutMs: 5_000 };
+
+// A reasoning model can spend the whole budget thinking and answer nothing. The
+// record must say so: hasText=false alone cannot tell it from a relay that sent
+// an empty `stop`.
+for (const shape of ["reasoning-only", "nothing-at-all"] as const) test(`an empty terminal turn records hasReasoning for ${shape}`, async () => {
+  const frames = shape === "reasoning-only"
+    ? [{ choices: [{ delta: { reasoning_content: "weighed the evidence, wrote nothing" } }] },
+      { choices: [{ delta: {}, finish_reason: "stop" }] }]
+    : [{ choices: [{ delta: {}, finish_reason: "stop" }] }];
+  await withServer(async (request, response) => {
+    await readBody(request);
+    sse(response, frames);
+  }, async (baseUrl) => {
+    const seen: ModelWireDiagnostics[] = [];
+    const failure = await streamModelTurn({ baseUrl, model: "alias-reasoning", proxy: { mode: "direct" } },
+      "s", [{ role: "user", content: "synthetic" }], [], { ...policy, maxRetries: 0 }, AbortSignal.timeout(5_000),
+      { onWireDiagnostics: (diagnostics) => seen.push(diagnostics), rejectEmptyTerminalTurn: true })
+      .then(() => null, (error) => error);
+    assert.ok(failure instanceof EmptyModelTurnError, "an empty terminal turn is still a failure");
+    assert.equal(seen.length, 1, "one summary per request");
+    const record = seen[0]!;
+    assert.equal(record.hasText, false);
+    assert.equal(record.hasToolCalls, false);
+    assert.equal(record.finishReason, "stop");
+    assert.deepEqual(record.error, { classification: "empty_completion" }, "the rejection itself is unchanged");
+    assert.equal(record.hasReasoning, shape === "reasoning-only");
+  });
+});
 
 test("an installed catalog narrows thinking and pricing exactly as the snapshot states", () => {
   installTestModelCatalog();

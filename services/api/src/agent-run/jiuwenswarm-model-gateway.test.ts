@@ -781,7 +781,7 @@ const EMPTY_WIRE: ModelWireDiagnostics = {
   attempts: 2, retries: 1, httpStatus: 200, upstreamRequestId: "upstream-9",
   startedAt: "2026-10-28T00:00:00.000Z", completedAt: "2026-10-28T00:00:00.250Z", elapsedMs: 250,
   transportChunks: 2, bytes: 120, sseRecords: 3, sseParseErrors: 0, hasText: false, hasToolCalls: false,
-  finishReason: "stop", truncated: false, retryErrors: ["provider_http"],
+  finishReason: "stop", hasReasoning: false, truncated: false, retryErrors: ["provider_http"],
 };
 
 test("gateway rejects a completed empty terminal turn and preserves its framing summary", async () => {
@@ -906,5 +906,35 @@ for (const kind of ['missing-id', 'done-only', 'valid-finish'] as const) test(`a
     const r = await fetch(gateway.url + '/chat/completions', { method: 'POST', headers: { authorization: `Bearer ${gateway.token}`, 'content-type': 'application/json' }, body: JSON.stringify({ messages: [{ role: 'user', content: 'synthetic' }] }) });
     assert.equal(r.status, kind === 'valid-finish' ? 200 : 502);
     const text = await r.text(); assert.match(text, kind === 'missing-id' ? /omitted a tool call ID/ : kind === 'done-only' ? /without a completion event/ : /"content":"OK"/);
+  } finally { await gateway.close(); server.closeAllConnections(); await new Promise<void>(r => server.close(() => r())); }
+});
+
+for (const shape of ["reasoning-only", "nothing-at-all"] as const) test(`gateway summary line separates a ${shape} empty terminal turn`, async (t) => {
+  const lines: string[] = [];
+  t.mock.method(console, "info", (line: string) => lines.push(String(line)));
+  const { createServer } = await import('node:http');
+  const server = createServer(async (req, res) => {
+    for await (const _ of req) {}
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    const frames = shape === "reasoning-only"
+      ? [{ choices: [{ delta: { reasoning_content: "weighed the evidence, wrote nothing" } }] }]
+      : [];
+    for (const frame of frames) res.write(`data: ${JSON.stringify(frame)}\n\n`);
+    res.end(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: 'stop' }] })}\n\ndata: [DONE]\n\n`);
+  });
+  await new Promise<void>(r => server.listen(0, '127.0.0.1', r));
+  const gateway = await startModelGateway({ baseUrl: `http://127.0.0.1:${(server.address() as any).port}`, model: 'synthetic', proxy: { mode: 'direct' } }, POLICY, AbortSignal.timeout(3000));
+  try {
+    const r = await fetch(gateway.url + '/chat/completions', { method: 'POST', headers: { authorization: `Bearer ${gateway.token}`, 'content-type': 'application/json' }, body: JSON.stringify({ messages: [{ role: 'user', content: 'synthetic' }] }) });
+    assert.equal(r.status, 502);
+    assert.match(await r.text(), /empty terminal turn/i);
+    const summaries = lines.filter(line => line.startsWith("[model-sse-summary] "))
+      .map(line => JSON.parse(line.slice("[model-sse-summary] ".length)));
+    assert.equal(summaries.length, 1, "one summary line per request");
+    assert.deepEqual(summaries[0].error, { classification: "empty_completion" });
+    assert.equal(summaries[0].hasText, false);
+    assert.equal(summaries[0].finishReason, "stop");
+    assert.equal(summaries[0].hasReasoning, shape === "reasoning-only",
+      "a turn that spent its budget thinking is not a relay that sent nothing");
   } finally { await gateway.close(); server.closeAllConnections(); await new Promise<void>(r => server.close(() => r())); }
 });

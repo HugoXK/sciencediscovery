@@ -110,18 +110,28 @@ record carries the local request ID, the provider request ID when the response
 headers expose one, scheme-and-host endpoint identity, model alias, HTTP status,
 retry count and per-attempt failure classes, dispatch/headers/first-byte/first-
 SSE-record/completion timestamps, transport and SSE record counts, parse-error
-count, `finish_reason`, truncation, and whether any text or tool call was
-assembled. It never contains prompts, response text, tool arguments, request
-headers or credentials. `onWireDiagnostics` carries the same record in-process;
+count, `finish_reason`, truncation, whether any text or tool call was
+assembled, and whether the provider streamed reasoning text (`hasReasoning`). It
+never contains prompts, response text, tool arguments, request headers or
+credentials. `onWireDiagnostics` carries the same record in-process;
 the native loop and the JiuwenSwarm gateway log it, so the real-E2E
 `stack.log` keeps per-request evidence.
+
+A request that ends in an error carries its `error.classification` on that same
+line, including an empty completion: the gateway holds the record until the
+outcome is known, so a 502 never leaves an unclassified success line behind.
 
 A completed task turn with no non-whitespace text and no tool call is an error,
 not a final answer, even when the provider reports `finish_reason=stop`. The
 runtime client and the gateway both enforce this rule, so an alternate streamer
-cannot silently deliver an empty result. A turn cut at the output limit keeps
-the existing truncation recovery path. The error message preserves the wire
-summary (request IDs, status, record counts, finish reason) and no payload.
+cannot silently deliver an empty result. `hasReasoning` separates the two shapes
+that would otherwise look identical: a reasoning model that spent its whole
+budget thinking and answered nothing (`hasReasoning: true`) and a relay that
+returned an empty `stop` (`hasReasoning: false`). Both are still
+`empty_completion` and still fail the request. A turn cut at the output limit
+keeps the existing truncation recovery path. The error message preserves the
+wire summary (request IDs, status, record counts, finish reason, reasoning
+presence) and no payload.
 
 For a controlled relay/direct comparison, use
 `node scripts/model-endpoint-compare.mjs --model <alias> --a-base-url … --b-base-url … --prompt-file …`;

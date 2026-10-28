@@ -335,12 +335,15 @@ stream assembler caused malformed JSON. Logging failures do not change task beha
 Every streamed task request also writes one `[model-sse-summary]` line with the
 gateway request ID, the provider request ID when present, endpoint host and model
 alias, HTTP status, retries and their failure classes, wire timestamps, SSE record
-and parse-error counts, `finish_reason` and whether text or a tool call was
-produced. The line has no prompts, answers, arguments, headers or credentials, and
+and parse-error counts, `finish_reason`, whether text or a tool call was
+produced, and whether the provider streamed reasoning (`hasReasoning`). A request
+that ends in an error carries its classification on that same line. The line has
+no prompts, answers, arguments, headers or credentials, and
 is what real E2E keeps in `stack.log`. A task turn that completed with no
 non-whitespace text and no tool call is rejected: `502` before a response starts,
-or a `model_gateway_error` event when reasoning already reached the client. The
-message keeps the request IDs and framing summary. Housekeeping and compaction
+or a `model_gateway_error` event when reasoning already reached the client.
+`hasReasoning: true` marks a model that spent its budget thinking; both shapes are
+still `empty_completion`. The message keeps the request IDs and framing summary. Housekeeping and compaction
 are exempt because an empty auxiliary response is not a final answer.
 
 Set `SCIENCE_AGENT_TRACE_MODEL_STREAM=1` on the Node API process to enable
