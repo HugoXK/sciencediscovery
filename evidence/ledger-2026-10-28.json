@@ -1,0 +1,95 @@
+{
+ "purpose": "Tamper-evidence anchor for ScienceDiscovery upstream comment/PR state on 2026-10-28. Hashes only; no secrets, no message bodies.",
+ "repo": "openJiuwen-ai/sciencediscovery",
+ "anchor_created_for": "owner report on shared-token write/delete anomalies",
+ "taken_at": "2026-10-28T09:16:31.736532+00:00",
+ "prs": {
+  "616": {
+   "head": "c7d49f7952a946e5e2c12b45ac632df3c66408d8",
+   "updated_at": "2026-10-28T08:37:54Z",
+   "body_len": 5930,
+   "body_sha256": "69cc78aa868acf5b",
+   "comments": [
+    {
+     "id": 6463203781,
+     "author": "HugoXK",
+     "created_at": "2026-10-28T07:23:01Z",
+     "updated_at": "2026-10-28T07:23:01Z",
+     "status": "present",
+     "len": 128,
+     "sha256": "224d41d7af83fb60"
+    },
+    {
+     "id": 6463260405,
+     "author": "HugoXK",
+     "created_at": "2026-10-28T07:26:46Z",
+     "updated_at": "2026-10-28T07:26:46Z",
+     "status": "present",
+     "len": 180,
+     "sha256": "52317bafa59b392f"
+    },
+    {
+     "id": 6463607356,
+     "author": "HugoXK",
+     "created_at": "2026-10-28T07:48:49Z",
+     "updated_at": "2026-10-28T08:00:42Z",
+     "status": "present",
+     "len": 832,
+     "sha256": "84b174786bcc33e1"
+    }
+   ]
+  },
+  "617": {
+   "head": "77138729b56f473053aebd69023b32795e257823",
+   "updated_at": "2026-10-28T08:36:26Z",
+   "body_len": 10781,
+   "body_sha256": "bd0af185d20d7bbf",
+   "comments": [
+    {
+     "id": 6463366237,
+     "author": "HugoXK",
+     "created_at": "2026-10-28T07:33:45Z",
+     "updated_at": "2026-10-28T07:33:45Z",
+     "status": "present",
+     "len": 128,
+     "sha256": "aab5e2aee1232f25"
+    },
+    {
+     "id": 6463813036,
+     "author": "HugoXK",
+     "created_at": "2026-10-28T08:00:18Z",
+     "updated_at": "2026-10-28T08:00:18Z",
+     "status": "present",
+     "len": 1529,
+     "sha256": "00b19f5c78b9d82a"
+    }
+   ]
+  }
+ },
+ "deleted_comments": [
+  {
+   "id": 6463363871,
+   "state": "404",
+   "recovered": true
+  },
+  {
+   "id": 6463971160,
+   "state": "404",
+   "recovered": true
+  }
+ ],
+ "recovered_bodies_sha256_prefixes": {
+  "6463363871": {
+   "len": 939,
+   "sha256": "8bdcf06059286089"
+  },
+  "6463607356_original": {
+   "len": 500,
+   "sha256": "92363d67b7f64f46"
+  },
+  "6463971160": {
+   "len": 1209,
+   "sha256": "5b5c4aeea2cc25b7"
+  }
+ }
+}
