@@ -29,6 +29,7 @@ import {
   type ModelEndpoint,
   type ModelTurn,
   type ModelWireDiagnostics,
+  type ModelWireErrorClass,
   type WireToolSpec,
 } from "@sciencediscovery/model";
 import { missingRequiredArguments } from "@sciencediscovery/tools";
@@ -304,10 +305,30 @@ export async function startModelGateway(
     // stack.log evidence). It is counts, timings and classifications only:
     // never prompts, answers, tool arguments, headers or credentials.
     let wireReported = false;
+    let pendingWire: ModelWireDiagnostics | undefined;
     const purpose = auxiliary ? "auxiliary" : "task";
-    const logWire = (wire: ModelWireDiagnostics) => {
+    // The transport reports its wire record on the success path, but the turn it
+    // returned can still fail here (empty terminal turn, unusable tool call). The
+    // record is held until the outcome is known, so the one line a request writes
+    // carries the classification of the error it ended with.
+    const logWire = (wire: ModelWireDiagnostics) => { pendingWire = wire; };
+    const reportWire = (errorClass?: ModelWireErrorClass) => {
+      if (wireReported) return;
+      const classification = pendingWire?.error?.classification ?? errorClass;
+      if (!pendingWire && classification === undefined) return;
       wireReported = true;
-      try { console.info(`[model-sse-summary] ${JSON.stringify({ ...wire, gatewayRequestId: id, purpose })}`); } catch { /* logging must not change the request */ }
+      const record = {
+        ...(pendingWire ?? { endpoint: modelEndpointIdentity(endpoint), model: endpoint.model }),
+        gatewayRequestId: id,
+        purpose,
+        ...(classification === undefined ? {} : {
+          error: pendingWire?.error ?? {
+            classification,
+            ...(classification === "provider_http" && pendingWire?.httpStatus !== undefined ? { httpStatus: pendingWire.httpStatus } : {}),
+          },
+        }),
+      };
+      try { console.info(`[model-sse-summary] ${JSON.stringify(record)}`); } catch { /* logging must not change the request */ }
     };
     // A call whose arguments do not parse is never executed. Truncated turns have their own recovery;
     // a finished task turn is withheld whole for Swarm's recovery boundary. Housekeeping, and runs whose
@@ -430,6 +451,9 @@ export async function startModelGateway(
             // progress without exposing partial arguments or adding model text.
             writeDelta({});
           },
+          // A task turn that answers nothing and calls nothing cannot advance
+          // the run, so the transport classifies its one record accordingly.
+          rejectEmptyTerminalTurn: !auxiliary,
           onWireDiagnostics: logWire,
         });
         controller.signal.throwIfAborted();
@@ -446,6 +470,7 @@ export async function startModelGateway(
         }
         await record(turn);
         const usage = usageOf(turn);
+        reportWire();
         response.write(chunk({}, invalid.length ? "length" : finishReason(turn), usage ? { usage } : {}));
         response.end("data: [DONE]\n\n");
         trace("complete", true);
@@ -458,6 +483,7 @@ export async function startModelGateway(
         onTextDelta: progress,
         onThinkingDelta: progress,
         onToolCallDelta: progress,
+        rejectEmptyTerminalTurn: !auxiliary,
         onWireDiagnostics: logWire,
       });
       controller.signal.throwIfAborted();
@@ -468,6 +494,7 @@ export async function startModelGateway(
       const content = typeof turn.assistantMessage.content === "string" ? turn.assistantMessage.content : textOf(turn.assistantMessage.content);
       const withheld = turn.truncated && turn.toolCalls.length ? WITHHELD_TOOLS : invalid.length ? withheldNotice(turn, invalid) : "";
       const usage = usageOf(turn);
+      reportWire();
       response.writeHead(200, { "content-type": "application/json" });
       response.end(JSON.stringify({
         id, object: "chat.completion", created: Math.floor(Date.now() / 1000), model: endpoint.model,
@@ -475,13 +502,9 @@ export async function startModelGateway(
         ...(usage ? { usage } : {}),
       }));
     } catch (error) {
-      if (!wireReported) {
-        try {
-          console.info(`[model-sse-summary] ${JSON.stringify({ gatewayRequestId: id, purpose,
-            endpoint: modelEndpointIdentity(endpoint), model: endpoint.model,
-            error: { classification: classifyModelWireError(error) } })}`);
-        } catch { /* logging must not change the request */ }
-      }
+      // The request ends here, so the one line it writes names this class even
+      // when the transport already reported the wire on its success path.
+      reportWire(classifyModelWireError(error));
       trace(controller.signal.aborted ? "cancelled" : "error", true);
       const status = error instanceof ModelRequestError && error.statusCode >= 400 && error.statusCode < 600 ? error.statusCode : 502;
       const original = error instanceof Error ? error.message : String(error);

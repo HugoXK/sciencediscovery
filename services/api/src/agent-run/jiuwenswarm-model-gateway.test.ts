@@ -803,6 +803,31 @@ test("gateway rejects a completed empty terminal turn and preserves its framing 
   } finally { await g.close(); }
 });
 
+test("an empty terminal turn's summary line carries its empty_completion classification", async (t) => {
+  const lines: string[] = [];
+  t.mock.method(console, "info", (line: string) => lines.push(String(line)));
+  const emptyTurn = answer({ assistantMessage: { role: "assistant", content: "" }, toolCalls: [], completionObserved: true,
+    wireDiagnostics: EMPTY_WIRE });
+  // The transport reports its wire record on the success path, before the gateway
+  // decides the turn cannot advance the run. The line a reader sees must still say
+  // why the request failed instead of looking like a quiet success.
+  const { streamer } = fakeStreamer(emptyTurn, [], EMPTY_WIRE);
+  const g = await gateway(streamer);
+  try {
+    const response = await post(g, { messages: [], stream: false });
+    assert.equal(response.status, 502);
+    const summaries = lines.filter(line => line.startsWith("[model-sse-summary] "))
+      .map(line => JSON.parse(line.slice("[model-sse-summary] ".length)));
+    assert.equal(summaries.length, 1, "one summary line per request");
+    assert.deepEqual(summaries[0].error, { classification: "empty_completion" });
+    assert.equal(summaries[0].purpose, "task");
+    assert.equal(summaries[0].hasText, false);
+    assert.equal(summaries[0].hasToolCalls, false);
+    assert.equal(summaries[0].finishReason, "stop");
+    assert.equal(summaries[0].upstreamRequestId, "upstream-9");
+  } finally { await g.close(); }
+});
+
 test("gateway reports an empty terminal turn after reasoning-only output as a mid-stream error", async () => {
   const emptyTurn = answer({ assistantMessage: { role: "assistant", content: "" }, toolCalls: [], completionObserved: true });
   const { streamer } = fakeStreamer(emptyTurn, [["thinking", "weighing the options"]], EMPTY_WIRE);
@@ -844,6 +869,7 @@ test("gateway logs one privacy-safe model wire summary per request", async (t) =
     assert.equal(summaries[0].requestId, "model-abc");
     assert.equal(summaries[0].upstreamRequestId, "upstream-9");
     assert.equal(summaries[0].sseRecords, 3);
+    assert.equal(summaries[0].error, undefined, "a served turn is not a failure");
     const output = lines.join("\n");
     assert.ok(!output.includes("private prompt"));
     assert.ok(!output.includes("super-secret-token"));

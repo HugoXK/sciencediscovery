@@ -40,7 +40,13 @@ implements ModelClient<TMessage, ModelInput<TMessage>, ModelUsage> {
     signal: AbortSignal,
     observer: ModelClientObserver,
   ): Promise<RuntimeModelTurn<TMessage, ModelUsage>> {
-    const turn = await this.transport(this.endpoint, input.systemPrompt, input.history, input.tools, this.policy, signal, observer);
+    const turn = await this.transport(this.endpoint, input.systemPrompt, input.history, input.tools, this.policy, signal, {
+      ...observer,
+      // The rule below is this client's, so the transport must classify the one
+      // record it reports; the summary line then says `empty_completion` instead
+      // of reading like a served turn.
+      rejectEmptyTerminalTurn: true,
+    });
     if (turn.streamDiagnostics?.unparseableSsePayloads) throw new Error("Model stream contained malformed event payloads");
     if (turn.completionObserved === false) throw new Error("Model stream ended without a completion event");
     // A completed turn that says nothing and calls nothing ends the run with no

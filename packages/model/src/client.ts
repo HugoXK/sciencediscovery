@@ -209,6 +209,12 @@ export interface ModelStreamCallbacks {
   onToolCallDelta?: (delta: { index: number; id?: string; name?: string; arguments: string }) => void;
   /** Called once per request, including failures. Never receives payload text. */
   onWireDiagnostics?: (diagnostics: ModelWireDiagnostics) => void;
+  /**
+   * Treat a finished turn with no text and no tool call as a model failure for
+   * this request. The one reported record then carries `empty_completion`, so a
+   * reader never sees an unclassified success record for a request that failed.
+   */
+  rejectEmptyTerminalTurn?: boolean;
 }
 
 /** Adapt protocol-specific cumulative buffers without replaying arguments. */
@@ -1327,8 +1333,8 @@ export async function streamModelTurn(
     try { callbacks.onWireDiagnostics?.(diagnostics); } catch { /* diagnostics never change a model request */ }
     return diagnostics;
   };
+  let turn: ModelTurn;
   try {
-    let turn: ModelTurn;
     switch (protocol) {
       case "anthropic-messages":
         turn = await streamAnthropicTurn(endpoint, systemPrompt, history, tools, policy, signal, observed, recorder);
@@ -1340,11 +1346,21 @@ export async function streamModelTurn(
         turn = await streamOpenAiTurn(endpoint, systemPrompt, history, tools, policy, signal, observed, recorder);
         break;
     }
-    turn.wireDiagnostics = emit();
-    return turn;
   } catch (error) {
     const diagnostics = emit(classifyModelWireError(error));
     if (typeof error === "object" && error !== null) wireDiagnosticsByError.set(error, diagnostics);
     throw error;
   }
+  // The transport's own success path is not always a served request: a caller
+  // that rejects an empty terminal turn reports the classification on this one
+  // record instead of printing an unclassified success first and throwing after.
+  const empty = callbacks.rejectEmptyTerminalTurn === true && isEmptyTerminalTurn(turn);
+  const diagnostics = emit(empty ? "empty_completion" : undefined);
+  turn.wireDiagnostics = diagnostics;
+  if (empty) {
+    const error = new EmptyModelTurnError(diagnostics);
+    wireDiagnosticsByError.set(error, diagnostics);
+    throw error;
+  }
+  return turn;
 }
