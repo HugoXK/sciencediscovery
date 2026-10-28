@@ -87,6 +87,118 @@ export interface ModelTurn {
   truncated?: boolean;
   /** Provider terminal evidence; false means a disconnected or malformed stream. */
   completionObserved?: boolean;
+  /** Privacy-safe per-request wire evidence. Absent when the transport was not observed. */
+  wireDiagnostics?: ModelWireDiagnostics;
+}
+
+/** How a model request failed, at the boundary where the failure was observed. */
+export type ModelWireErrorClass =
+  | "aborted"
+  | "empty_completion"
+  | "invalid_response"
+  | "network"
+  | "parse"
+  | "provider_http"
+  | "timeout"
+  | "unknown";
+
+/**
+ * Per-request evidence of the wire, not of the research result.
+ *
+ * This record deliberately carries no prompt, response text, tool arguments,
+ * headers or credentials. It is what lets a reader tell an upstream empty or
+ * failed completion from a local SSE/assembly defect, and separate model/API
+ * latency from agent work. Timings are wall-clock ISO strings plus millisecond
+ * offsets within the turn, so a log line is self-contained and comparable
+ * across machines.
+ */
+export interface ModelWireDiagnostics {
+  requestId: string;
+  /** Scheme and host only; never credentials, query strings or request paths. */
+  endpoint: string;
+  protocol: ModelApiProtocol;
+  model: string;
+  attempts: number;
+  retries: number;
+  httpStatus?: number;
+  /** Provider request ID from the response headers when it is present and safe. */
+  upstreamRequestId?: string;
+  startedAt: string;
+  dispatchedAt?: string;
+  headersAt?: string;
+  firstByteAt?: string;
+  firstRecordAt?: string;
+  completedAt: string;
+  elapsedMs: number;
+  timeToHeadersMs?: number;
+  timeToFirstByteMs?: number;
+  timeToFirstRecordMs?: number;
+  transportChunks: number;
+  bytes: number;
+  sseRecords: number;
+  sseParseErrors: number;
+  hasText: boolean;
+  hasToolCalls: boolean;
+  finishReason?: string;
+  truncated: boolean;
+  /** Classification of each attempt that was retried before the final one. */
+  retryErrors: ModelWireErrorClass[];
+  error?: { classification: ModelWireErrorClass; httpStatus?: number };
+}
+
+/** A completed assistant turn with no visible answer and no tool call. */
+export class EmptyModelTurnError extends Error {
+  constructor(readonly diagnostics?: ModelWireDiagnostics) {
+    super(`Model returned an empty terminal turn (no text and no tool call)${wireSummary(diagnostics)}`);
+    this.name = "EmptyModelTurnError";
+  }
+}
+
+function wireSummary(diagnostics: ModelWireDiagnostics | undefined): string {
+  if (!diagnostics) return "";
+  const parts = [
+    `requestId=${diagnostics.requestId}`,
+    `endpoint=${diagnostics.endpoint}`,
+    `model=${diagnostics.model.slice(0, 100)}`,
+    `httpStatus=${diagnostics.httpStatus ?? "unknown"}`,
+    ...(diagnostics.upstreamRequestId ? [`upstreamRequestId=${diagnostics.upstreamRequestId}`] : []),
+    `sseRecords=${diagnostics.sseRecords}`,
+    `sseParseErrors=${diagnostics.sseParseErrors}`,
+    `finishReason=${diagnostics.finishReason ?? "unknown"}`,
+    `retries=${diagnostics.retries}`,
+  ];
+  return ` [${parts.join(" ")}]`;
+}
+
+/** A non-truncated assistant turn that cannot advance the run. */
+export function isEmptyTerminalTurn(turn: Pick<ModelTurn, "assistantMessage" | "toolCalls" | "truncated">): boolean {
+  if (turn.truncated) return false;
+  if (turn.toolCalls.length) return false;
+  return !contentText(turn.assistantMessage.content).trim();
+}
+
+const wireDiagnosticsByError = new WeakMap<object, ModelWireDiagnostics>();
+
+/** Diagnostics for a model request that failed; absent when it never reached the wire. */
+export function modelWireDiagnosticsOf(error: unknown): ModelWireDiagnostics | undefined {
+  return typeof error === "object" && error !== null ? wireDiagnosticsByError.get(error) : undefined;
+}
+
+/** Classify a model failure for diagnostics and CI summaries. */
+export function classifyModelWireError(error: unknown): ModelWireErrorClass {
+  if (error instanceof EmptyModelTurnError) return "empty_completion";
+  if (error instanceof ModelRequestError) return "provider_http";
+  const code = typeof error === "object" && error !== null && "code" in error ? String(error.code) : "";
+  if (/TIMEOUT|TIMEDOUT/i.test(code)) return "timeout";
+  if (code.startsWith("UND_ERR_") || /^(?:ECONN|EHOST|ENET|EAI_|EPIPE)/.test(code)) return "network";
+  const name = typeof error === "object" && error !== null && "name" in error ? String(error.name) : "";
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  if (name === "AbortError" || name === "TimeoutError" || /\baborted\b/i.test(message)) return "aborted";
+  if (/timed? ?out/i.test(message)) return "timeout";
+  if (/malformed|unparseable|JSON/i.test(message)) return "parse";
+  if (/model endpoint is unavailable|fetch failed|socket|connection/i.test(message)) return "network";
+  if (/model stream|model returned|chat completion|completion omitted|changed an already streamed/i.test(message)) return "invalid_response";
+  return "unknown";
 }
 
 export interface ModelStreamCallbacks {
@@ -95,6 +207,8 @@ export interface ModelStreamCallbacks {
   onThinkingDelta?: (delta: string) => void;
   /** Tool identity is sent once; arguments are append-only JSON fragments. */
   onToolCallDelta?: (delta: { index: number; id?: string; name?: string; arguments: string }) => void;
+  /** Called once per request, including failures. Never receives payload text. */
+  onWireDiagnostics?: (diagnostics: ModelWireDiagnostics) => void;
 }
 
 /** Adapt protocol-specific cumulative buffers without replaying arguments. */
@@ -212,10 +326,143 @@ function parseToolCallArgs(rawArguments: string): { args: Record<string, unknown
   }
 }
 
-async function* sseData(body: AsyncIterable<Uint8Array>, onProgress?: () => void): AsyncGenerator<string> {
+/** Scheme and host of an endpoint, never its credentials or query string. */
+export function modelEndpointIdentity(endpoint: ModelEndpoint): string {
+  try { return new URL(endpoint.baseUrl).origin; } catch { return "invalid"; }
+}
+
+const UPSTREAM_REQUEST_ID_HEADERS = ["x-request-id", "request-id", "openai-request-id", "x-oneapi-request-id", "x-amzn-requestid"] as const;
+
+function upstreamRequestIdOf(headers: Record<string, string | string[] | undefined>): string | undefined {
+  for (const key of UPSTREAM_REQUEST_ID_HEADERS) {
+    const raw = headers[key];
+    const value = Array.isArray(raw) ? raw[0] : raw;
+    // Provider IDs are opaque; retain only a bounded, log-safe token.
+    if (typeof value === "string" && /^[A-Za-z0-9._:-]{1,128}$/.test(value)) return value;
+  }
+  return undefined;
+}
+
+/**
+ * Collects one request's wire evidence in memory. It never holds payload text:
+ * only counts, timings, booleans and an already-bounded provider request ID.
+ */
+class ModelWireRecorder {
+  readonly requestId = `model-${randomUUID()}`;
+  private readonly startedMs = Date.now();
+  private readonly endpoint: string;
+  private readonly model: string;
+  private dispatchedMs?: number;
+  private headersMs?: number;
+  private firstByteMs?: number;
+  private firstRecordMs?: number;
+  private attempts = 0;
+  private readonly retryErrors: ModelWireErrorClass[] = [];
+  private httpStatus?: number;
+  private upstreamRequestId?: string;
+  private bytes = 0;
+  private transportChunks = 0;
+  private sseRecords = 0;
+  private sseParseErrors = 0;
+  private textSeen = false;
+  private toolSeen = false;
+  private finish?: string;
+  private truncated = false;
+
+  constructor(
+    endpoint: ModelEndpoint,
+    private readonly protocol: ModelApiProtocol,
+  ) {
+    this.endpoint = modelEndpointIdentity(endpoint);
+    this.model = endpoint.model.slice(0, 200);
+  }
+
+  dispatch(): void {
+    this.attempts += 1;
+    this.dispatchedMs = Date.now();
+  }
+
+  headers(status: number, headers: Record<string, string | string[] | undefined>): void {
+    this.headersMs = Date.now();
+    this.httpStatus = status;
+    this.upstreamRequestId = upstreamRequestIdOf(headers);
+  }
+
+  byte(size: number): void {
+    if (this.firstByteMs === undefined) this.firstByteMs = Date.now();
+    this.transportChunks += 1;
+    this.bytes += size;
+  }
+
+  record(): void {
+    if (this.firstRecordMs === undefined) this.firstRecordMs = Date.now();
+    this.sseRecords += 1;
+  }
+
+  parseError(): void { this.sseParseErrors += 1; }
+
+  text(delta: string): void { if (delta.trim()) this.textSeen = true; }
+
+  tool(delta: { id?: string; name?: string }): void { if (delta.id || delta.name) this.toolSeen = true; }
+
+  finishReason(reason: string): void {
+    this.finish = /^[A-Za-z][A-Za-z0-9_-]{0,39}$/.test(reason) ? reason : "unknown";
+  }
+
+  markTruncated(): void { this.truncated = true; }
+
+  final(parts: { hasText: boolean; hasToolCalls: boolean; truncated?: boolean }): void {
+    this.textSeen ||= parts.hasText;
+    this.toolSeen ||= parts.hasToolCalls;
+    this.truncated ||= Boolean(parts.truncated);
+  }
+
+  retry(errorClass: ModelWireErrorClass): void { this.retryErrors.push(errorClass); }
+
+  report(errorClass?: ModelWireErrorClass): ModelWireDiagnostics {
+    const completedMs = Date.now();
+    const dispatched = this.dispatchedMs ?? this.startedMs;
+    const iso = (ms: number) => new Date(ms).toISOString();
+    return {
+      requestId: this.requestId,
+      endpoint: this.endpoint,
+      protocol: this.protocol,
+      model: this.model,
+      attempts: Math.max(1, this.attempts),
+      retries: this.retryErrors.length,
+      ...(this.httpStatus === undefined ? {} : { httpStatus: this.httpStatus }),
+      ...(this.upstreamRequestId === undefined ? {} : { upstreamRequestId: this.upstreamRequestId }),
+      startedAt: iso(this.startedMs),
+      ...(this.dispatchedMs === undefined ? {} : { dispatchedAt: iso(this.dispatchedMs) }),
+      ...(this.headersMs === undefined ? {} : { headersAt: iso(this.headersMs) }),
+      ...(this.firstByteMs === undefined ? {} : { firstByteAt: iso(this.firstByteMs) }),
+      ...(this.firstRecordMs === undefined ? {} : { firstRecordAt: iso(this.firstRecordMs) }),
+      completedAt: iso(completedMs),
+      elapsedMs: completedMs - this.startedMs,
+      ...(this.headersMs === undefined ? {} : { timeToHeadersMs: this.headersMs - dispatched }),
+      ...(this.firstByteMs === undefined ? {} : { timeToFirstByteMs: this.firstByteMs - dispatched }),
+      ...(this.firstRecordMs === undefined ? {} : { timeToFirstRecordMs: this.firstRecordMs - dispatched }),
+      transportChunks: this.transportChunks,
+      bytes: this.bytes,
+      sseRecords: this.sseRecords,
+      sseParseErrors: this.sseParseErrors,
+      hasText: this.textSeen,
+      hasToolCalls: this.toolSeen,
+      ...(this.finish === undefined ? {} : { finishReason: this.finish }),
+      truncated: this.truncated,
+      retryErrors: [...this.retryErrors],
+      ...(errorClass === undefined ? {} : {
+        error: { classification: errorClass, ...(errorClass === "provider_http" && this.httpStatus !== undefined ? { httpStatus: this.httpStatus } : {}) },
+      }),
+    };
+  }
+}
+
+async function* sseData(body: AsyncIterable<Uint8Array>, recorder: ModelWireRecorder, onProgress?: () => void): AsyncGenerator<string> {
   const decoder = new TextDecoder();
   let buffer = "";
   for await (const chunk of body) {
+    recorder.byte(chunk.byteLength);
     onProgress?.();
     buffer += decoder.decode(chunk, { stream: true });
     let newline = buffer.indexOf("\n");
@@ -224,13 +471,13 @@ async function* sseData(body: AsyncIterable<Uint8Array>, onProgress?: () => void
       buffer = buffer.slice(newline + 1);
       if (line.startsWith("data:")) {
         const payload = line.slice(5).trim();
-        if (payload && payload !== "[DONE]") yield payload;
+        if (payload && payload !== "[DONE]") { recorder.record(); yield payload; }
       }
       newline = buffer.indexOf("\n");
     }
   }
   const last = buffer.trim();
-  if (last.startsWith("data:") && last.slice(5).trim() !== "[DONE]") yield last.slice(5).trim();
+  if (last.startsWith("data:") && last.slice(5).trim() !== "[DONE]") { recorder.record(); yield last.slice(5).trim(); }
 }
 
 interface RequestOptions {
@@ -244,7 +491,7 @@ interface RequestOptions {
 
 /** POST with a bounded retry budget for pre-stream failures (connect errors,
  *  429, 5xx). Once the stream starts flowing, errors surface to the caller. */
-async function requestWithRetry(options: RequestOptions): Promise<{ body: AsyncIterable<Uint8Array> }> {
+async function requestWithRetry(options: RequestOptions, recorder: ModelWireRecorder): Promise<{ body: AsyncIterable<Uint8Array> }> {
   const dispatcher = proxyDispatcher(options.proxy);
   let lastError: Error | undefined;
   for (let attempt = 0; attempt <= options.policy.maxRetries; attempt += 1) {
@@ -253,6 +500,7 @@ async function requestWithRetry(options: RequestOptions): Promise<{ body: AsyncI
     let responseBody: AsyncIterable<Uint8Array> & { dump(): Promise<void> };
     let retryAfterMs: number | undefined;
     try {
+      recorder.dispatch();
       const response = await request(options.url, {
         method: "POST",
         headers: options.headers,
@@ -264,6 +512,7 @@ async function requestWithRetry(options: RequestOptions): Promise<{ body: AsyncI
       });
       statusCode = response.statusCode;
       responseBody = response.body;
+      recorder.headers(statusCode, response.headers as Record<string, string | string[] | undefined>);
       const retryAfter = response.headers["retry-after"];
       if (typeof retryAfter === "string" && Number.isFinite(Number(retryAfter))) {
         retryAfterMs = Number(retryAfter) * 1_000;
@@ -272,6 +521,7 @@ async function requestWithRetry(options: RequestOptions): Promise<{ body: AsyncI
       if (options.signal.aborted) { await dispatcher?.close(); throw new Error("aborted"); }
       lastError = error instanceof Error ? error : new Error(String(error));
       if (attempt < options.policy.maxRetries) {
+        recorder.retry(classifyModelWireError(error));
         await backoff(attempt, undefined, options.signal);
         continue;
       }
@@ -293,6 +543,7 @@ async function requestWithRetry(options: RequestOptions): Promise<{ body: AsyncI
     );
     if ((statusCode === 429 || statusCode >= 500) && attempt < options.policy.maxRetries) {
       lastError = failure;
+      recorder.retry("provider_http");
       await backoff(attempt, retryAfterMs, options.signal);
       continue;
     }
@@ -512,12 +763,13 @@ async function streamOpenAiTurn(
   policy: ModelClientPolicy,
   signal: AbortSignal,
   callbacks: ModelStreamCallbacks,
+  recorder: ModelWireRecorder,
 ): Promise<ModelTurn> {
   const variant = endpointVariant(endpoint);
   const { body } = await requestWithRetry({
     ...createModelRequest(endpoint, systemPrompt, history, tools, policy, true),
     policy, proxy: endpoint.proxy, signal,
-  });
+  }, recorder);
 
   let text = "";
   let deepseekReasoning = "";
@@ -531,23 +783,28 @@ async function streamOpenAiTurn(
   const buffersInlineThinking = variant === "minimax" || variant === "ollama";
 
   const streamDiagnostics = { protocol: "openai-chat-completions" as const, unparseableSsePayloads: 0, toolCallDeltasWithoutIndex: 0 };
-  for await (const payload of sseData(body, callbacks.onProgress)) {
+  for await (const payload of sseData(body, recorder, callbacks.onProgress)) {
     let chunk: Record<string, unknown>;
     try {
       chunk = JSON.parse(payload) as Record<string, unknown>;
     } catch {
       streamDiagnostics.unparseableSsePayloads += 1;
+      recorder.parseError();
       continue;
     }
     if (chunk.error) throw new Error(`Chat API error: ${streamErrorDetail(chunk.error, endpoint)}`);
     const chunkUsage = normalizeUsage(chunk.usage, "openai-chat-completions");
     if (chunkUsage) usage = chunkUsage;
     const choices = Array.isArray(chunk.choices) ? chunk.choices : [];
-    if (choices.length && isRecord(choices[0]) && typeof choices[0].finish_reason === "string") completionObserved = true;
+    if (choices.length && isRecord(choices[0]) && typeof choices[0].finish_reason === "string") {
+      completionObserved = true;
+      recorder.finishReason(choices[0].finish_reason);
+    }
     // Read before the `delta` guard below: the chunk that carries
     // `finish_reason` is the closing one, and it has no delta.
     if (choices.length && isRecord(choices[0]) && choices[0].finish_reason === "length") {
       truncated = true;
+      recorder.markTruncated();
     }
     const delta = choices.length && isRecord(choices[0]) && isRecord(choices[0].delta)
       ? choices[0].delta
@@ -636,6 +893,7 @@ async function streamOpenAiTurn(
     ...(variant === "qwen" && qwenReasoning !== undefined ? { reasoning: qwenReasoning } : {}),
     ...(variant === "minimax" && minimaxReasoning.length ? { reasoning_details: minimaxReasoning } : {}),
   };
+  recorder.final({ hasText: Boolean(text.trim()), hasToolCalls: toolCalls.length > 0, truncated });
   return { assistantMessage, toolCalls, streamDiagnostics, completionObserved, ...(usage ? { usage } : {}), ...(truncated ? { truncated } : {}) };
 }
 
@@ -699,11 +957,12 @@ async function streamResponsesTurn(
   policy: ModelClientPolicy,
   signal: AbortSignal,
   callbacks: ModelStreamCallbacks,
+  recorder: ModelWireRecorder,
 ): Promise<ModelTurn> {
   const { body } = await requestWithRetry({
     ...createModelRequest(endpoint, systemPrompt, history, tools, policy, true),
     policy, proxy: endpoint.proxy, signal,
-  });
+  }, recorder);
 
   let text = "";
   let usage: AgentModelUsage | undefined;
@@ -713,12 +972,13 @@ async function streamResponsesTurn(
   const partialItems = new Map<number, Record<string, unknown>>();
   const emitTool = toolDeltaEmitter(callbacks);
   const streamDiagnostics = { protocol: "openai-responses" as const, unparseableSsePayloads: 0 };
-  for await (const payload of sseData(body, callbacks.onProgress)) {
+  for await (const payload of sseData(body, recorder, callbacks.onProgress)) {
     let event: Record<string, unknown>;
     try {
       event = JSON.parse(payload) as Record<string, unknown>;
     } catch {
       streamDiagnostics.unparseableSsePayloads += 1;
+      recorder.parseError();
       continue;
     }
     if (event.type === "response.output_text.delta" && typeof event.delta === "string") {
@@ -747,6 +1007,9 @@ async function streamResponsesTurn(
       completionObserved = true;
       usage = normalizeUsage(event.response.usage, "openai-responses") ?? usage;
       truncated = event.type === "response.incomplete";
+      // Responses reports a completed/incomplete status, not a finish reason.
+      recorder.finishReason(truncated ? "length" : "stop");
+      if (truncated) recorder.markTruncated();
     } else if (event.type === "error") {
       throw new Error(`Responses API error: ${streamErrorDetail(event.message ?? "unknown", endpoint)}`);
     } else if (event.type === "response.failed") {
@@ -775,6 +1038,7 @@ async function streamResponsesTurn(
     const parsed = parseToolCallArgs(call.function.arguments);
     return { args: parsed.args, id: call.id, name: call.function.name, ...(parsed.error ? { argsParseError: parsed.error } : {}) };
   });
+  recorder.final({ hasText: Boolean(text.trim()), hasToolCalls: toolCalls.length > 0, truncated });
   return {
     assistantMessage: {
       role: "assistant",
@@ -861,11 +1125,12 @@ async function streamAnthropicTurn(
   policy: ModelClientPolicy,
   signal: AbortSignal,
   callbacks: ModelStreamCallbacks,
+  recorder: ModelWireRecorder,
 ): Promise<ModelTurn> {
   const { body } = await requestWithRetry({
     ...createModelRequest(endpoint, systemPrompt, history, tools, policy, true),
     policy, proxy: endpoint.proxy, signal,
-  });
+  }, recorder);
 
   let inputTokens: number | undefined;
   let outputTokens: number | undefined;
@@ -878,12 +1143,13 @@ async function streamAnthropicTurn(
   const toolErrors = new Map<string, string>();
   const emitTool = toolDeltaEmitter(callbacks);
   const streamDiagnostics = { protocol: "anthropic-messages" as const, unparseableSsePayloads: 0 };
-  for await (const payload of sseData(body, callbacks.onProgress)) {
+  for await (const payload of sseData(body, recorder, callbacks.onProgress)) {
     let event: Record<string, unknown>;
     try {
       event = JSON.parse(payload) as Record<string, unknown>;
     } catch {
       streamDiagnostics.unparseableSsePayloads += 1;
+      recorder.parseError();
       continue;
     }
     if (event.type === "error") throw new Error(`Messages API error: ${streamErrorDetail(event.error, endpoint)}`);
@@ -928,9 +1194,15 @@ async function streamAnthropicTurn(
       if (isRecord(event.usage)) {
         outputTokens = numberField(event.usage, ["output_tokens"]) ?? outputTokens;
       }
-      if (isRecord(event.delta) && typeof event.delta.stop_reason === "string") completionObserved = true;
+      if (isRecord(event.delta) && typeof event.delta.stop_reason === "string") {
+        completionObserved = true;
+        recorder.finishReason(event.delta.stop_reason);
+      }
       // Anthropic's equivalent of `finish_reason: "length"`.
-      if (isRecord(event.delta) && event.delta.stop_reason === "max_tokens") truncated = true;
+      if (isRecord(event.delta) && event.delta.stop_reason === "max_tokens") {
+        truncated = true;
+        recorder.markTruncated();
+      }
     }
   }
 
@@ -950,6 +1222,7 @@ async function streamAnthropicTurn(
     const parsed = parseToolCallArgs(call.function.arguments);
     return { args: parsed.args, id: call.id, name: call.function.name, ...(toolErrors.get(call.id) || parsed.error ? { argsParseError: toolErrors.get(call.id) ?? parsed.error } : {}) };
   });
+  recorder.final({ hasText: Boolean(text.trim()), hasToolCalls: toolCalls.length > 0, truncated });
   return {
     assistantMessage: {
       role: "assistant",
@@ -1042,12 +1315,36 @@ export async function streamModelTurn(
   signal: AbortSignal,
   callbacks: ModelStreamCallbacks = {},
 ): Promise<ModelTurn> {
-  switch (endpointProtocol(endpoint)) {
-    case "anthropic-messages":
-      return streamAnthropicTurn(endpoint, systemPrompt, history, tools, policy, signal, callbacks);
-    case "openai-responses":
-      return streamResponsesTurn(endpoint, systemPrompt, history, tools, policy, signal, callbacks);
-    default:
-      return streamOpenAiTurn(endpoint, systemPrompt, history, tools, policy, signal, callbacks);
+  const protocol = endpointProtocol(endpoint);
+  const recorder = new ModelWireRecorder(endpoint, protocol);
+  const observed: ModelStreamCallbacks = {
+    ...callbacks,
+    onTextDelta: (delta) => { recorder.text(delta); callbacks.onTextDelta?.(delta); },
+    onToolCallDelta: (delta) => { recorder.tool(delta); callbacks.onToolCallDelta?.(delta); },
+  };
+  const emit = (errorClass?: ModelWireErrorClass): ModelWireDiagnostics => {
+    const diagnostics = recorder.report(errorClass);
+    try { callbacks.onWireDiagnostics?.(diagnostics); } catch { /* diagnostics never change a model request */ }
+    return diagnostics;
+  };
+  try {
+    let turn: ModelTurn;
+    switch (protocol) {
+      case "anthropic-messages":
+        turn = await streamAnthropicTurn(endpoint, systemPrompt, history, tools, policy, signal, observed, recorder);
+        break;
+      case "openai-responses":
+        turn = await streamResponsesTurn(endpoint, systemPrompt, history, tools, policy, signal, observed, recorder);
+        break;
+      default:
+        turn = await streamOpenAiTurn(endpoint, systemPrompt, history, tools, policy, signal, observed, recorder);
+        break;
+    }
+    turn.wireDiagnostics = emit();
+    return turn;
+  } catch (error) {
+    const diagnostics = emit(classifyModelWireError(error));
+    if (typeof error === "object" && error !== null) wireDiagnosticsByError.set(error, diagnostics);
+    throw error;
   }
 }

@@ -27,6 +27,14 @@ for (const failure of ["incomplete", "malformed"] as const) test(`runtime reject
   const client = new ProviderModelClient(endpoint, policy, async () => ({ assistantMessage: { role: "assistant", content: "partial" }, toolCalls: [], ...(failure === "incomplete" ? { completionObserved: false } : { streamDiagnostics: { protocol: "openai-responses", unparseableSsePayloads: 1 } }) }));
   await assert.rejects(client.invoke(input, new AbortController().signal, observer), /Model stream/);
 });
+test("runtime rejects a completed terminal turn with no text and no tool call", async () => {
+  const empty: ModelTurn = { assistantMessage: { role: "assistant", content: "  \n" }, toolCalls: [], completionObserved: true };
+  const client = new ProviderModelClient(endpoint, policy, async () => empty);
+  await assert.rejects(client.invoke(input, new AbortController().signal, observer), /empty terminal turn/);
+  // An explicit output-limit finish keeps the existing truncation recovery path.
+  const truncated = new ProviderModelClient(endpoint, policy, async () => ({ ...empty, truncated: true }));
+  assert.equal((await truncated.invoke(input, new AbortController().signal, observer)).truncated, true);
+});
 test("runtime preserves original errors and unavailable usage without failing successful completion", async () => {
   const failure = new ModelRequestError("original provider error", 429);
   const bad = new ProviderModelClient(endpoint, policy, async () => { throw failure; });

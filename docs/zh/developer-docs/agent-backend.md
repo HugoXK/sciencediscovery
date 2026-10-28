@@ -118,6 +118,14 @@ Native executor 通过 ScienceDiscovery model package/client 直接调用用户�
 
 JiuwenSwarm 不直接绕过这些产品语义：其模型请求经 ScienceDiscovery 的 per-run model gateway/proxy 路径重新进入产品模型层。
 
+### 模型请求的线上诊断
+
+每个流式模型请求输出一行 `[model-sse-summary]` JSON。记录包含本地请求 ID、响应头给出时的上游请求 ID、仅 scheme+host 的 endpoint 标识、模型别名、HTTP 状态、重试次数与每次重试的失败分类、dispatch / headers / first byte / first SSE record / completion 时间戳、传输块与 SSE 记录数、解析错误数、`finish_reason`、是否截断，以及是否组出文本或工具调用。记录不含提示词、响应正文、工具参数、请求头或凭证。`onWireDiagnostics` 在进程内传递同一条记录；native loop 与 JiuwenSwarm gateway 都会写入日志，因此 real-E2E 的 `stack.log` 保留逐请求证据。
+
+任务回合已正常结束、却没有非空白文本也没有工具调用时，按错误处理，而不是成功终答，即使上游报告 `finish_reason=stop`。runtime client 与 gateway 都执行该规则，替代 streamer 也无法静默返回空结果；被输出上限截断的回合仍走既有截断恢复。错误消息保留线上摘要（请求 ID、状态、记录数、结束原因），不包含正文。
+
+需要受控的 relay/direct 对比时，使用 `node scripts/model-endpoint-compare.mjs --model <alias> --a-base-url … --b-base-url … --prompt-file …`：两个 endpoint 收到同一份请求体，请求交错执行，凭证只从 token 环境变量读取，报告只含逐请求延迟、错误与 token 汇总。
+
 ## 6. Tool dispatch
 
 Native executor 接收模型 tool call 后调用 ScienceDiscovery tool table。

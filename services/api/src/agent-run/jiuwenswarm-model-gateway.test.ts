@@ -19,7 +19,7 @@ import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { ModelRequestError, type ModelTurn, type streamModelTurn } from "@sciencediscovery/model";
+import { ModelRequestError, type ModelTurn, type ModelWireDiagnostics, type streamModelTurn } from "@sciencediscovery/model";
 
 import { isSwarmCompaction, startModelGateway, toModelRequest, withoutWithheldNotice, type ModelGatewayLifecycle } from "./jiuwenswarm-model-gateway.js";
 
@@ -101,11 +101,12 @@ const ENDPOINT = { baseUrl: "http://provider.test", model: "claude-x", apiProtoc
 
 type Call = { history: unknown[]; systemPrompt: string; tools: unknown[]; endpoint: unknown };
 
-function fakeStreamer(turn: ModelTurn | Error, deltas: Array<["text" | "thinking", string]> = []) {
+function fakeStreamer(turn: ModelTurn | Error, deltas: Array<["text" | "thinking", string]> = [], wire?: ModelWireDiagnostics) {
   const calls: Call[] = [];
   const streamer = (async (endpoint, systemPrompt, history, tools, _policy, _signal, callbacks) => {
     calls.push({ endpoint, history, systemPrompt, tools });
     for (const [kind, delta] of deltas) (kind === "text" ? callbacks?.onTextDelta : callbacks?.onThinkingDelta)?.(delta);
+    if (wire) callbacks?.onWireDiagnostics?.(wire);
     if (turn instanceof Error) throw turn;
     return turn;
   }) as typeof streamModelTurn;
@@ -772,6 +773,95 @@ for (const incomplete of [false, true]) test(`gateway rejects ${incomplete ? "un
   try {
     const response = await post(g, { messages: [], stream: false });
     assert.equal(response.status, 502); assert.match(await response.text(), /Model stream/);
+  } finally { await g.close(); }
+});
+
+const EMPTY_WIRE: ModelWireDiagnostics = {
+  requestId: "model-abc", endpoint: "https://relay.example", protocol: "openai-chat-completions", model: "deepseek-v4.1-flash",
+  attempts: 2, retries: 1, httpStatus: 200, upstreamRequestId: "upstream-9",
+  startedAt: "2026-10-28T00:00:00.000Z", completedAt: "2026-10-28T00:00:00.250Z", elapsedMs: 250,
+  transportChunks: 2, bytes: 120, sseRecords: 3, sseParseErrors: 0, hasText: false, hasToolCalls: false,
+  finishReason: "stop", truncated: false, retryErrors: ["provider_http"],
+};
+
+test("gateway rejects a completed empty terminal turn and preserves its framing summary", async () => {
+  const emptyTurn = answer({ assistantMessage: { role: "assistant", content: "  \n" }, toolCalls: [], completionObserved: true,
+    wireDiagnostics: EMPTY_WIRE });
+  const { streamer } = fakeStreamer(emptyTurn, [], EMPTY_WIRE);
+  const g = await gateway(streamer);
+  try {
+    const response = await post(g, { messages: [], stream: false });
+    assert.equal(response.status, 502);
+    const message = await response.text();
+    assert.match(message, /empty terminal turn/i);
+    assert.match(message, /requestId=model-abc/);
+    assert.match(message, /endpoint=https:\/\/relay\.example/);
+    assert.match(message, /upstreamRequestId=upstream-9/);
+    assert.match(message, /sseRecords=3/);
+    assert.match(message, /finishReason=stop/);
+    assert.match(message, /retries=1/);
+  } finally { await g.close(); }
+});
+
+test("gateway reports an empty terminal turn after reasoning-only output as a mid-stream error", async () => {
+  const emptyTurn = answer({ assistantMessage: { role: "assistant", content: "" }, toolCalls: [], completionObserved: true });
+  const { streamer } = fakeStreamer(emptyTurn, [["thinking", "weighing the options"]], EMPTY_WIRE);
+  const g = await gateway(streamer);
+  try {
+    const response = await post(g, { stream: true, messages: [] });
+    assert.equal(response.status, 200, "reasoning already reached the client; the failure arrives as a stream error");
+    const text = await response.text();
+    assert.match(text, /empty terminal turn/i);
+    assert.match(text, /model_gateway_error/);
+    assert.doesNotMatch(text, /\[DONE\]/, "no successful terminal event after the failure");
+  } finally { await g.close(); }
+});
+
+test("housekeeping may still return an empty turn; only a task answer is rejected", async () => {
+  const { streamer } = fakeStreamer(answer({ assistantMessage: { role: "assistant", content: "" }, toolCalls: [], completionObserved: true }));
+  const g = await gateway(streamer);
+  try {
+    const response = await fetch(`${g.url}/chat/completions`, { method: "POST", headers: {
+      authorization: `Bearer ${g.token}`, "content-type": "application/json", "x-sciencediscovery-model-purpose": "housekeeping",
+    }, body: JSON.stringify({ messages: [] }) });
+    assert.equal(response.status, 200);
+  } finally { await g.close(); }
+});
+
+test("gateway logs one privacy-safe model wire summary per request", async (t) => {
+  const lines: string[] = [];
+  t.mock.method(console, "info", (line: string) => lines.push(String(line)));
+  const { streamer } = fakeStreamer(answer(), [], EMPTY_WIRE);
+  const g = await gateway(streamer);
+  try {
+    const response = await post(g, { messages: [{ role: "user", content: "private prompt" }], stream: false });
+    assert.equal(response.status, 200);
+    const summaries = lines.filter(line => line.startsWith("[model-sse-summary] "))
+      .map(line => JSON.parse(line.slice("[model-sse-summary] ".length)));
+    assert.equal(summaries.length, 1);
+    assert.match(summaries[0].gatewayRequestId, /^chatcmpl-/);
+    assert.equal(summaries[0].purpose, "task");
+    assert.equal(summaries[0].requestId, "model-abc");
+    assert.equal(summaries[0].upstreamRequestId, "upstream-9");
+    assert.equal(summaries[0].sseRecords, 3);
+    const output = lines.join("\n");
+    assert.ok(!output.includes("private prompt"));
+    assert.ok(!output.includes("super-secret-token"));
+  } finally { await g.close(); }
+});
+
+test("gateway logs a classified summary when a custom streamer fails without wire evidence", async (t) => {
+  const lines: string[] = [];
+  t.mock.method(console, "info", (line: string) => lines.push(String(line)));
+  const { streamer } = fakeStreamer(new ModelRequestError("Model request failed with status 503", 503));
+  const g = await gateway(streamer);
+  try {
+    assert.equal((await post(g, { messages: [], stream: false })).status, 503);
+    const summaries = lines.filter(line => line.startsWith("[model-sse-summary] "))
+      .map(line => JSON.parse(line.slice("[model-sse-summary] ".length)));
+    assert.equal(summaries.length, 1);
+    assert.match(summaries[0].gatewayRequestId, /^chatcmpl-/);
+    assert.deepEqual(summaries[0].error, { classification: "provider_http" });
   } finally { await g.close(); }
 });
 

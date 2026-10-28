@@ -20,10 +20,15 @@ import { recordInvalidArguments } from "./model-argument-diagnostics.js";
 
 import {
   ModelRequestError,
+  EmptyModelTurnError,
+  classifyModelWireError,
+  isEmptyTerminalTurn,
+  modelEndpointIdentity,
   streamModelTurn,
   type ModelClientPolicy,
   type ModelEndpoint,
   type ModelTurn,
+  type ModelWireDiagnostics,
   type WireToolSpec,
 } from "@sciencediscovery/model";
 import { missingRequiredArguments } from "@sciencediscovery/tools";
@@ -295,6 +300,15 @@ export async function startModelGateway(
     response.on("close", () => { if (!response.writableEnded) controller.abort(); });
     const id = `chatcmpl-${randomUUID()}`;
     if (!auxiliary) lastFailure = undefined;
+    // One line per model request into the API log (and so the real-E2E
+    // stack.log evidence). It is counts, timings and classifications only:
+    // never prompts, answers, tool arguments, headers or credentials.
+    let wireReported = false;
+    const purpose = auxiliary ? "auxiliary" : "task";
+    const logWire = (wire: ModelWireDiagnostics) => {
+      wireReported = true;
+      try { console.info(`[model-sse-summary] ${JSON.stringify({ ...wire, gatewayRequestId: id, purpose })}`); } catch { /* logging must not change the request */ }
+    };
     // A call whose arguments do not parse is never executed. Truncated turns have their own recovery;
     // a finished task turn is withheld whole for Swarm's recovery boundary. Housekeeping, and runs whose
     // requests may come from instances without that boundary, still fail the request.
@@ -306,6 +320,10 @@ export async function startModelGateway(
       if (turn.streamDiagnostics?.unparseableSsePayloads && !turn.toolCalls.some(call => call.argsParseError)) throw new Error("Model stream contained malformed event payloads");
       if (turn.completionObserved === false) throw new Error("Model stream ended without a completion event");
       if (turn.truncated) return [];
+      // An alternate streamer reaches this gateway without the runtime client's
+      // completion rule. A task turn that answers nothing and calls nothing
+      // cannot advance the run, whatever finish reason the provider claimed.
+      if (!auxiliary && isEmptyTerminalTurn(turn)) throw new EmptyModelTurnError(turn.wireDiagnostics);
       const unparseable: WithheldCall[] = turn.toolCalls.filter(call => call.argsParseError)
         .map((call) => ({ call, reason: parserMessage(call.argsParseError) }));
       // A call that left out an argument the tool cannot run without can never
@@ -412,6 +430,7 @@ export async function startModelGateway(
             // progress without exposing partial arguments or adding model text.
             writeDelta({});
           },
+          onWireDiagnostics: logWire,
         });
         controller.signal.throwIfAborted();
         await recordInvalidArguments(turn, id);
@@ -439,6 +458,7 @@ export async function startModelGateway(
         onTextDelta: progress,
         onThinkingDelta: progress,
         onToolCallDelta: progress,
+        onWireDiagnostics: logWire,
       });
       controller.signal.throwIfAborted();
       await recordInvalidArguments(turn, id);
@@ -455,6 +475,13 @@ export async function startModelGateway(
         ...(usage ? { usage } : {}),
       }));
     } catch (error) {
+      if (!wireReported) {
+        try {
+          console.info(`[model-sse-summary] ${JSON.stringify({ gatewayRequestId: id, purpose,
+            endpoint: modelEndpointIdentity(endpoint), model: endpoint.model,
+            error: { classification: classifyModelWireError(error) } })}`);
+        } catch { /* logging must not change the request */ }
+      }
       trace(controller.signal.aborted ? "cancelled" : "error", true);
       const status = error instanceof ModelRequestError && error.statusCode >= 400 && error.statusCode < 600 ? error.statusCode : 502;
       const original = error instanceof Error ? error.message : String(error);

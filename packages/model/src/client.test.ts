@@ -30,6 +30,8 @@ import { installTestModelCatalog } from "./models-dev.fixture.js";
 
 import {
   isModelInputTooLargeError,
+  modelEndpointIdentity,
+  modelWireDiagnosticsOf,
   ModelRequestError,
   normalizeUsage,
   proxyDispatcher,
@@ -38,6 +40,7 @@ import {
   toAnthropicMessages,
   type ModelClientPolicy,
   type ModelStreamCallbacks,
+  type ModelWireDiagnostics,
 } from "./client.js";
 
 for (const protocol of ["openai-chat-completions", "openai-responses", "anthropic-messages"] as const) {
@@ -118,6 +121,95 @@ test("provider context overflow is normalized without treating arbitrary token e
   )), true);
   assert.equal(isModelInputTooLargeError(new ModelRequestError("Model request failed with status 401: token invalid", 401)), false);
   assert.equal(isModelInputTooLargeError(new Error("network request failed")), false);
+});
+
+test("the recorded endpoint identity drops credentials, paths and query strings", () => {
+  assert.equal(modelEndpointIdentity({ baseUrl: "https://user:secret@relay.example/v1/chat?api_key=secret-query", model: "alias" }), "https://relay.example");
+  assert.equal(modelEndpointIdentity({ apiToken: "secret-token", baseUrl: "http://127.0.0.1:8080/v1", model: "alias" }), "http://127.0.0.1:8080");
+  assert.equal(modelEndpointIdentity({ baseUrl: "not a url", model: "alias" }), "invalid");
+});
+
+test("model wire diagnostics record timing, framing and upstream identity without payloads", async () => {
+  await withServer(async (request, response) => {
+    await readBody(request);
+    response.writeHead(200, { "content-type": "text/event-stream", "x-request-id": "upstream-req-1" });
+    response.write(`data: ${JSON.stringify({ choices: [{ delta: { content: "hello" } }] })}\n\n`);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    response.write("data: {not json\n\n");
+    response.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\n`);
+    response.end("data: [DONE]\n\n");
+  }, async (baseUrl) => {
+    const seen: ModelWireDiagnostics[] = [];
+    const turn = await streamModelTurn(
+      { apiToken: "super-secret-token", baseUrl, model: "alias-1", proxy: { mode: "direct" } },
+      "s", [{ role: "user", content: "private prompt" }], [], policy, AbortSignal.timeout(5_000),
+      { onWireDiagnostics: (diagnostics) => seen.push(diagnostics) },
+    );
+    const diagnostics = turn.wireDiagnostics!;
+    assert.equal(seen.length, 1, "one summary per request");
+    assert.deepEqual(seen[0], diagnostics);
+    assert.match(diagnostics.requestId, /^model-[0-9a-f-]{36}$/);
+    assert.equal(diagnostics.endpoint, baseUrl);
+    assert.equal(diagnostics.protocol, "openai-chat-completions");
+    assert.equal(diagnostics.model, "alias-1");
+    assert.equal(diagnostics.attempts, 1);
+    assert.equal(diagnostics.retries, 0);
+    assert.equal(diagnostics.httpStatus, 200);
+    assert.equal(diagnostics.upstreamRequestId, "upstream-req-1");
+    assert.equal(diagnostics.sseRecords, 3);
+    assert.equal(diagnostics.sseParseErrors, 1);
+    assert.equal(diagnostics.hasText, true);
+    assert.equal(diagnostics.hasToolCalls, false);
+    assert.equal(diagnostics.finishReason, "stop");
+    assert.equal(diagnostics.truncated, false);
+    assert.deepEqual(diagnostics.retryErrors, []);
+    assert.ok(diagnostics.timeToHeadersMs! >= 0);
+    assert.ok(diagnostics.timeToFirstByteMs! >= diagnostics.timeToHeadersMs!);
+    assert.ok(diagnostics.timeToFirstRecordMs! >= diagnostics.timeToFirstByteMs!);
+    assert.ok(diagnostics.elapsedMs >= diagnostics.timeToFirstRecordMs!);
+    assert.ok(Date.parse(diagnostics.completedAt) >= Date.parse(diagnostics.startedAt));
+    const serialized = JSON.stringify(diagnostics);
+    for (const secret of ["super-secret-token", "private prompt", "hello"]) assert.ok(!serialized.includes(secret));
+    assert.ok(!("prompt" in diagnostics) && !("response" in diagnostics) && !("headers" in diagnostics));
+  });
+});
+
+test("model wire diagnostics classify retried attempts and preserve failed-request evidence", async () => {
+  let attempts = 0;
+  await withServer(async (request, response) => {
+    await readBody(request);
+    attempts += 1;
+    if (attempts < 3) {
+      response.writeHead(503, { "content-type": "application/json", "retry-after": "0" });
+      response.end('{"error":{"message":"busy"}}');
+      return;
+    }
+    sse(response, [{ choices: [{ delta: { content: "ok" } }] }, { choices: [{ delta: {}, finish_reason: "stop" }] }]);
+  }, async (baseUrl) => {
+    const turn = await streamModelTurn({ baseUrl, model: "alias-2", proxy: { mode: "direct" } }, "s", [], [],
+      { ...policy, maxRetries: 2 }, AbortSignal.timeout(5_000));
+    const diagnostics = turn.wireDiagnostics!;
+    assert.equal(diagnostics.attempts, 3);
+    assert.equal(diagnostics.retries, 2);
+    assert.deepEqual(diagnostics.retryErrors, ["provider_http", "provider_http"]);
+    assert.equal(diagnostics.httpStatus, 200);
+    assert.equal(diagnostics.error, undefined);
+  });
+  await withServer(async (request, response) => {
+    await readBody(request);
+    response.writeHead(401, { "content-type": "application/json" });
+    response.end('{"error":{"message":"invalid key super-secret-token"}}');
+  }, async (baseUrl) => {
+    const failure = await streamModelTurn({ apiToken: "super-secret-token", baseUrl, model: "alias-3", proxy: { mode: "direct" } },
+      "s", [], [], { ...policy, maxRetries: 0 }, AbortSignal.timeout(5_000)).then(() => null, (error) => error);
+    assert.ok(failure instanceof ModelRequestError);
+    const diagnostics = modelWireDiagnosticsOf(failure)!;
+    assert.equal(diagnostics.httpStatus, 401);
+    assert.equal(diagnostics.attempts, 1);
+    assert.deepEqual(diagnostics.error, { classification: "provider_http", httpStatus: 401 });
+    assert.equal(diagnostics.hasText, false);
+    assert.ok(!JSON.stringify(diagnostics).includes("super-secret-token"));
+  });
 });
 
 const policy: ModelClientPolicy = { maxRetries: 1, maxTokens: 1_024, requestTimeoutMs: 5_000 };
