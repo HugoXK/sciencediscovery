@@ -342,8 +342,9 @@ no prompts, answers, arguments, headers or credentials, and
 is what real E2E keeps in `stack.log`. A task turn that completed with no
 non-whitespace text and no tool call is rejected: `502` before a response starts,
 or a `model_gateway_error` event when reasoning already reached the client.
-`hasReasoning: true` marks a model that spent its budget thinking; both shapes are
-still `empty_completion`. The message keeps the request IDs and framing summary. Housekeeping and compaction
+`hasReasoning: true` marks a model that spent its budget thinking and is
+classified `reasoning_only`; a relay that sent nothing at all is
+`empty_completion`. Both still fail the request. The message keeps the request IDs and framing summary. Housekeeping and compaction
 are exempt because an empty auxiliary response is not a final answer.
 
 Set `SCIENCE_AGENT_TRACE_MODEL_STREAM=1` on the Node API process to enable

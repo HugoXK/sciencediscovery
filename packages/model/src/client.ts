@@ -99,6 +99,12 @@ export type ModelWireErrorClass =
   | "network"
   | "parse"
   | "provider_http"
+  /**
+   * The turn produced hidden reasoning and then nothing: no text and no tool
+   * call. It is not the same failure as a relay that sent nothing at all, so the
+   * classification itself names which shape happened. Both still fail the run.
+   */
+  | "reasoning_only"
   | "timeout"
   | "unknown";
 
@@ -195,7 +201,13 @@ export function modelWireDiagnosticsOf(error: unknown): ModelWireDiagnostics | u
 
 /** Classify a model failure for diagnostics and CI summaries. */
 export function classifyModelWireError(error: unknown): ModelWireErrorClass {
-  if (error instanceof EmptyModelTurnError) return "empty_completion";
+  if (error instanceof EmptyModelTurnError) {
+    // A record that already names the shape wins; otherwise the record's own
+    // reasoning evidence decides, so the transport and the gateway fallback
+    // never disagree about which empty shape failed.
+    return error.diagnostics?.error?.classification
+      ?? (error.diagnostics?.hasReasoning ? "reasoning_only" : "empty_completion");
+  }
   if (error instanceof ModelRequestError) return "provider_http";
   const code = typeof error === "object" && error !== null && "code" in error ? String(error.code) : "";
   if (/TIMEOUT|TIMEDOUT/i.test(code)) return "timeout";
@@ -220,8 +232,9 @@ export interface ModelStreamCallbacks {
   onWireDiagnostics?: (diagnostics: ModelWireDiagnostics) => void;
   /**
    * Treat a finished turn with no text and no tool call as a model failure for
-   * this request. The one reported record then carries `empty_completion`, so a
-   * reader never sees an unclassified success record for a request that failed.
+   * this request. The one reported record then carries the classification of
+   * the shape — `reasoning_only` or `empty_completion` — so a reader never sees
+   * an unclassified success record for a request that failed.
    */
   rejectEmptyTerminalTurn?: boolean;
 }
@@ -437,6 +450,9 @@ class ModelWireRecorder {
   }
 
   retry(errorClass: ModelWireErrorClass): void { this.retryErrors.push(errorClass); }
+
+  /** Whether the provider streamed reasoning text for this request. */
+  reasoningObserved(): boolean { return this.reasoningSeen; }
 
   report(errorClass?: ModelWireErrorClass): ModelWireDiagnostics {
     const completedMs = Date.now();
@@ -1377,8 +1393,12 @@ export async function streamModelTurn(
   // The transport's own success path is not always a served request: a caller
   // that rejects an empty terminal turn reports the classification on this one
   // record instead of printing an unclassified success first and throwing after.
+  // The shape decides the class: thought was streamed and no answer followed is
+  // `reasoning_only`; nothing at all is `empty_completion`. The rejection below
+  // is the same either way.
   const empty = callbacks.rejectEmptyTerminalTurn === true && isEmptyTerminalTurn(turn);
-  const diagnostics = emit(empty ? "empty_completion" : undefined);
+  const emptyClass: ModelWireErrorClass = recorder.reasoningObserved() ? "reasoning_only" : "empty_completion";
+  const diagnostics = emit(empty ? emptyClass : undefined);
   turn.wireDiagnostics = diagnostics;
   if (empty) {
     const error = new EmptyModelTurnError(diagnostics);

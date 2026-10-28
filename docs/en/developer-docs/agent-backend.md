@@ -124,11 +124,12 @@ outcome is known, so a 502 never leaves an unclassified success line behind.
 A completed task turn with no non-whitespace text and no tool call is an error,
 not a final answer, even when the provider reports `finish_reason=stop`. The
 runtime client and the gateway both enforce this rule, so an alternate streamer
-cannot silently deliver an empty result. `hasReasoning` separates the two shapes
-that would otherwise look identical: a reasoning model that spent its whole
-budget thinking and answered nothing (`hasReasoning: true`) and a relay that
-returned an empty `stop` (`hasReasoning: false`). Both are still
-`empty_completion` and still fail the request. A turn cut at the output limit
+cannot silently deliver an empty result. The two shapes that would otherwise
+look identical are separate classifications as well as separate `hasReasoning`
+values: a reasoning model that spent its whole budget thinking and answered
+nothing is `reasoning_only` (`hasReasoning: true`), and a relay that returned an
+empty `stop` is `empty_completion` (`hasReasoning: false`). Both still fail the
+request; only the recorded class differs. A turn cut at the output limit
 keeps the existing truncation recovery path. The error message preserves the
 wire summary (request IDs, status, record counts, finish reason, reasoning
 presence) and no payload.

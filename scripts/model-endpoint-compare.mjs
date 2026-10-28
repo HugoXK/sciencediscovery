@@ -9,7 +9,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
-const CLASSIFICATIONS = ['aborted', 'empty_completion', 'invalid_response', 'network', 'parse', 'provider_http', 'timeout', 'unknown'];
+const CLASSIFICATIONS = ['aborted', 'empty_completion', 'invalid_response', 'network', 'parse', 'provider_http', 'reasoning_only', 'timeout', 'unknown'];
 
 export function classifyFailure(error, status) {
   if (typeof status === 'number' && status >= 400) return 'provider_http';
@@ -39,8 +39,8 @@ async function requestOnce(endpoint, body, timeoutMs, active) {
   const startedAt = Date.now();
   const measured = { name: endpoint.name, status: undefined, error: undefined, elapsedMs: undefined,
     timeToHeadersMs: undefined, timeToFirstByteMs: undefined, timeToFirstRecordMs: undefined,
-    bytes: 0, sseRecords: 0, sseParseErrors: 0, hasText: false, hasToolCalls: false, finishReason: undefined,
-    usage: undefined };
+    bytes: 0, sseRecords: 0, sseParseErrors: 0, hasText: false, hasToolCalls: false,
+    hasReasoning: false, finishReason: undefined, usage: undefined };
   active.count += 1;
   active.max = Math.max(active.max, active.count);
   const controller = new AbortController();
@@ -83,6 +83,8 @@ async function requestOnce(endpoint, body, timeoutMs, active) {
               const delta = choice?.delta ?? {};
               if (typeof delta.content === 'string' && delta.content.trim()) measured.hasText = true;
               if (Array.isArray(delta.tool_calls) && delta.tool_calls.length) measured.hasToolCalls = true;
+              if ((typeof delta.reasoning_content === 'string' && delta.reasoning_content.trim())
+                || (typeof delta.reasoning === 'string' && delta.reasoning.trim())) measured.hasReasoning = true;
               if (record?.usage && typeof record.usage === 'object') {
                 const total = record.usage.total_tokens;
                 if (Number.isSafeInteger(total)) measured.usage = { totalTokens: total,
@@ -96,7 +98,11 @@ async function requestOnce(endpoint, body, timeoutMs, active) {
       }
     }
     measured.elapsedMs = Date.now() - startedAt;
-    if (!measured.hasText && !measured.hasToolCalls) measured.error = { classification: 'empty_completion' };
+    if (!measured.hasText && !measured.hasToolCalls) {
+      // Same two shapes the product path distinguishes: thought that ended
+      // without an answer is not a relay that sent nothing at all.
+      measured.error = { classification: measured.hasReasoning ? 'reasoning_only' : 'empty_completion' };
+    }
     return measured;
   } catch (error) {
     measured.elapsedMs = Date.now() - startedAt;
@@ -132,9 +138,10 @@ function summarizeEndpoint(endpoint, results) {
     failed: results.length - completed.length,
     provider_failures: results.filter(result => ['provider_http', 'network', 'timeout'].includes(result.error?.classification)).length,
     empty_completions: failureCount('empty_completion'),
+    reasoning_only_completions: failureCount('reasoning_only'),
     parse_failures: results.filter(result => result.error?.classification === 'parse').length,
     requests_with_parse_errors: results.filter(result => result.sseParseErrors > 0).length,
-    other_failures: results.filter(result => result.error && !['provider_http', 'network', 'timeout', 'empty_completion', 'parse'].includes(result.error.classification)).length,
+    other_failures: results.filter(result => result.error && !['provider_http', 'network', 'timeout', 'empty_completion', 'reasoning_only', 'parse'].includes(result.error.classification)).length,
     elapsed_ms: distribution(results.map(result => result.elapsedMs).filter(Number.isFinite)),
     time_to_headers_ms: distribution(results.map(result => result.timeToHeadersMs).filter(Number.isFinite)),
     first_record_ms: distribution(results.map(result => result.timeToFirstRecordMs).filter(Number.isFinite)),

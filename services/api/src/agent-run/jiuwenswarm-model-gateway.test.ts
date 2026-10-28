@@ -828,6 +828,27 @@ test("an empty terminal turn's summary line carries its empty_completion classif
   } finally { await g.close(); }
 });
 
+test("gateway classifies a custom streamer's reasoning-only empty turn as reasoning_only", async (t) => {
+  const lines: string[] = [];
+  t.mock.method(console, "info", (line: string) => lines.push(String(line)));
+  // An alternate streamer reaches the gateway without the transport's own
+  // classification. The record still says which empty shape failed: thought was
+  // streamed and no answer followed, which is not a relay that sent nothing.
+  const reasoningOnlyWire = { ...EMPTY_WIRE, hasReasoning: true };
+  const emptyTurn = answer({ assistantMessage: { role: "assistant", content: "" }, toolCalls: [], completionObserved: true,
+    wireDiagnostics: reasoningOnlyWire });
+  const { streamer } = fakeStreamer(emptyTurn, [["thinking", "weighing the options"]], reasoningOnlyWire);
+  const g = await gateway(streamer);
+  try {
+    assert.equal((await post(g, { messages: [], stream: false })).status, 502);
+    const summaries = lines.filter(line => line.startsWith("[model-sse-summary] "))
+      .map(line => JSON.parse(line.slice("[model-sse-summary] ".length)));
+    assert.equal(summaries.length, 1, "one summary line per request");
+    assert.deepEqual(summaries[0].error, { classification: "reasoning_only" });
+    assert.equal(summaries[0].hasReasoning, true);
+  } finally { await g.close(); }
+});
+
 test("gateway reports an empty terminal turn after reasoning-only output as a mid-stream error", async () => {
   const emptyTurn = answer({ assistantMessage: { role: "assistant", content: "" }, toolCalls: [], completionObserved: true });
   const { streamer } = fakeStreamer(emptyTurn, [["thinking", "weighing the options"]], EMPTY_WIRE);
@@ -951,7 +972,9 @@ for (const shape of ["reasoning-only", "nothing-at-all"] as const) test(`gateway
     const summaries = lines.filter(line => line.startsWith("[model-sse-summary] "))
       .map(line => JSON.parse(line.slice("[model-sse-summary] ".length)));
     assert.equal(summaries.length, 1, "one summary line per request");
-    assert.deepEqual(summaries[0].error, { classification: "empty_completion" });
+    const expectedClass = shape === "reasoning-only" ? "reasoning_only" : "empty_completion";
+    assert.deepEqual(summaries[0].error, { classification: expectedClass },
+      "the line names which empty shape the request ended in");
     assert.equal(summaries[0].hasText, false);
     assert.equal(summaries[0].finishReason, "stop");
     assert.equal(summaries[0].hasReasoning, shape === "reasoning-only",

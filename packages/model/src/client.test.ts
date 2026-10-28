@@ -29,6 +29,7 @@ import {
 import { installTestModelCatalog } from "./models-dev.fixture.js";
 
 import {
+  classifyModelWireError,
   EmptyModelTurnError,
   isModelInputTooLargeError,
   modelEndpointIdentity,
@@ -217,8 +218,10 @@ const policy: ModelClientPolicy = { maxRetries: 1, maxTokens: 1_024, requestTime
 
 // A reasoning model can spend the whole budget thinking and answer nothing. The
 // record must say so: hasText=false alone cannot tell it from a relay that sent
-// an empty `stop`.
-for (const shape of ["reasoning-only", "nothing-at-all"] as const) test(`an empty terminal turn records hasReasoning for ${shape}`, async () => {
+// an empty `stop`, and the two shapes are separate failures, so the
+// classification itself names the shape that happened.
+const EMPTY_TURN_CLASSIFICATION = { "reasoning-only": "reasoning_only", "nothing-at-all": "empty_completion" } as const;
+for (const shape of ["reasoning-only", "nothing-at-all"] as const) test(`an empty terminal turn is classified ${EMPTY_TURN_CLASSIFICATION[shape]} for ${shape}`, async () => {
   const frames = shape === "reasoning-only"
     ? [{ choices: [{ delta: { reasoning_content: "weighed the evidence, wrote nothing" } }] },
       { choices: [{ delta: {}, finish_reason: "stop" }] }]
@@ -238,8 +241,11 @@ for (const shape of ["reasoning-only", "nothing-at-all"] as const) test(`an empt
     assert.equal(record.hasText, false);
     assert.equal(record.hasToolCalls, false);
     assert.equal(record.finishReason, "stop");
-    assert.deepEqual(record.error, { classification: "empty_completion" }, "the rejection itself is unchanged");
     assert.equal(record.hasReasoning, shape === "reasoning-only");
+    assert.deepEqual(record.error, { classification: EMPTY_TURN_CLASSIFICATION[shape] },
+      "the one summary line names which empty shape failed");
+    assert.equal(classifyModelWireError(failure), EMPTY_TURN_CLASSIFICATION[shape],
+      "the thrown error and the reported record agree");
   });
 });
 
