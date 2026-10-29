@@ -263,6 +263,26 @@ test("dataset preview parses csv tables and truncates rows", async (context) => 
   assert.equal(payload.truncated, true);
 });
 
+test("dataset preview parses quoted csv cells", async (context) => {
+  const fixture = await createFixture(context);
+  // RFC 4180: a comma inside quotes and a doubled quote are data, not syntax.
+  const csv = 'name,note\nAlice,"hello, world"\nBob,"say ""hi"""';
+  const vid = await seedArtifact(fixture, {
+    content: csv,
+    kind: "dataset",
+    logicalName: "table.csv",
+    mediaType: "text/csv",
+  });
+  const payload = await buildArtifactVersionPreview(
+    fixture.store, fixture.recorder, fixture.session.id, vid, "10",
+  );
+  if (payload.mode !== "dataset-table") assert.fail(`unexpected mode: ${payload.mode}`);
+  assert.deepEqual(payload.columns, ["name", "note"]);
+  assert.equal(payload.totalRows, 2);
+  assert.deepEqual(payload.rows[0], ["Alice", "hello, world"]);
+  assert.deepEqual(payload.rows[1], ["Bob", 'say "hi"']);
+});
+
 test("json preview keeps the dataset table for record arrays", async (context) => {
   const fixture = await createFixture(context);
   const vid = await seedArtifact(fixture, {
