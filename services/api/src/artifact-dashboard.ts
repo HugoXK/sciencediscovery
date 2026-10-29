@@ -243,8 +243,65 @@ async function readCasText(recorder: ProvenanceRecorder, hash: string): Promise<
   }
 }
 
-function splitDelimited(source: string, delimiter: RegExp): string[][] {
-  return source.split(/\r?\n/).filter((line) => line.length > 0).map((line) => line.split(delimiter));
+/**
+ * Split delimited text into records the way a spreadsheet writes them (RFC 4180):
+ * a delimiter or newline inside a quoted field is data, and a doubled quote
+ * inside a quoted field is one quote. A quote only opens a field at its start,
+ * so an apostrophe mid-cell is left alone. Blank lines stay out, as before.
+ */
+function splitDelimited(source: string, delimiter: string): string[][] {
+  const records: string[][] = [];
+  let record: string[] = [];
+  let field = "";
+  let quoted = false;
+  let touched = false;
+  const endRecord = () => {
+    if (touched) {
+      record.push(field);
+      records.push(record);
+    }
+    record = [];
+    field = "";
+    touched = false;
+  };
+  for (let index = 0; index < source.length; index += 1) {
+    const char = source.charAt(index);
+    if (quoted) {
+      if (char === '"' && source.charAt(index + 1) === '"') {
+        field += '"';
+        index += 1;
+      } else if (char === '"') {
+        quoted = false;
+      } else {
+        field += char;
+      }
+      touched = true;
+      continue;
+    }
+    if (char === '"' && field.length === 0) {
+      quoted = true;
+      touched = true;
+      continue;
+    }
+    if (char === delimiter) {
+      record.push(field);
+      field = "";
+      touched = true;
+      continue;
+    }
+    if (char === "\n" || char === "\r") {
+      if (char === "\r" && source.charAt(index + 1) === "\n") index += 1;
+      endRecord();
+      continue;
+    }
+    field += char;
+    touched = true;
+  }
+  if (touched || record.length > 0) {
+    record.push(field);
+    records.push(record);
+  }
+  return records;
 }
 
 function datasetSubtypeFor(name: string): DatasetTextSubtype | undefined {
@@ -257,7 +314,7 @@ function parseDelimitedTable(source: string, subtype: ".csv" | ".tsv", maxRows: 
   rows: string[][];
   totalRows: number;
 } {
-  const delimiter = subtype === ".csv" ? /,/ : /\t/;
+  const delimiter = subtype === ".csv" ? "," : "\t";
   const lines = splitDelimited(source, delimiter);
   if (!lines.length) return { columns: [], rows: [], totalRows: 0 };
   return {
