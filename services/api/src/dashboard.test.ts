@@ -331,6 +331,55 @@ test("dataset preview keeps an unclosed quote as one field", async (context) => 
   assert.equal(payload.truncated, false);
 });
 
+test("a csv dataset preview strips the UTF-8 BOM from the first header cell", async (context) => {
+  const fixture = await createFixture(context);
+  // What Excel writes for "CSV UTF-8": the marker precedes the first header.
+  const vid = await seedArtifact(fixture, {
+    content: "\uFEFFname,note\nAlice,1\n",
+    kind: "dataset",
+    logicalName: "bom.csv",
+    mediaType: "text/csv",
+  });
+  const payload = await buildArtifactVersionPreview(
+    fixture.store, fixture.recorder, fixture.session.id, vid,
+  );
+  if (payload.mode !== "dataset-table") assert.fail(`unexpected mode: ${payload.mode}`);
+  assert.deepEqual(payload.columns, ["name", "note"]);
+  assert.equal(payload.totalRows, 1);
+  assert.deepEqual(payload.rows[0], ["Alice", "1"]);
+});
+
+test("a tsv dataset preview strips the UTF-8 BOM from the first header cell", async (context) => {
+  const fixture = await createFixture(context);
+  const vid = await seedArtifact(fixture, {
+    content: "\uFEFFname\tnote\nAlice\t1\n",
+    kind: "dataset",
+    logicalName: "bom.tsv",
+    mediaType: "text/tab-separated-values",
+  });
+  const payload = await buildArtifactVersionPreview(
+    fixture.store, fixture.recorder, fixture.session.id, vid,
+  );
+  if (payload.mode !== "dataset-table") assert.fail(`unexpected mode: ${payload.mode}`);
+  assert.deepEqual(payload.columns, ["name", "note"]);
+  assert.deepEqual(payload.rows[0], ["Alice", "1"]);
+});
+
+test("a dataset preview without a BOM keeps every header cell unchanged", async (context) => {
+  const fixture = await createFixture(context);
+  for (const [logicalName, mediaType, content, columns] of [
+    ["plain.csv", "text/csv", "name,note\nAlice,1\n", ["name", "note"]],
+    ["plain.tsv", "text/tab-separated-values", "name\tnote\nAlice\t1\n", ["name", "note"]],
+  ] as const) {
+    const vid = await seedArtifact(fixture, { content, kind: "dataset", logicalName, mediaType });
+    const payload = await buildArtifactVersionPreview(
+      fixture.store, fixture.recorder, fixture.session.id, vid,
+    );
+    if (payload.mode !== "dataset-table") assert.fail(`unexpected mode: ${payload.mode}`);
+    assert.deepEqual(payload.columns, [...columns]);
+  }
+});
+
 test("json preview keeps the dataset table for record arrays", async (context) => {
   const fixture = await createFixture(context);
   const vid = await seedArtifact(fixture, {
