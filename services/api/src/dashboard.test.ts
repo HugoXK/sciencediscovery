@@ -283,6 +283,29 @@ test("dataset preview parses quoted csv cells", async (context) => {
   assert.deepEqual(payload.rows[1], ["Bob", 'say "hi"']);
 });
 
+test("dataset preview keeps an unclosed quote as one field", async (context) => {
+  const fixture = await createFixture(context);
+  // One opening quote and no closing one makes the entire file a single cell.
+  // The content stays small so this test pins the parsed result, not its cost:
+  // such a file must still preview as one honest column and no rows.
+  const body = `${"x".repeat(64 * 1024)},tail\n`;
+  const vid = await seedArtifact(fixture, {
+    content: `"${body}`,
+    kind: "dataset",
+    logicalName: "unclosed.csv",
+    mediaType: "text/csv",
+  });
+  const payload = await buildArtifactVersionPreview(
+    fixture.store, fixture.recorder, fixture.session.id, vid, "10",
+  );
+  if (payload.mode !== "dataset-table") assert.fail(`unexpected mode: ${payload.mode}`);
+  assert.equal(payload.columns.length, 1);
+  assert.equal(payload.columns[0], body);
+  assert.equal(payload.rows.length, 0);
+  assert.equal(payload.totalRows, 0);
+  assert.equal(payload.truncated, false);
+});
+
 test("json preview keeps the dataset table for record arrays", async (context) => {
   const fixture = await createFixture(context);
   const vid = await seedArtifact(fixture, {

@@ -248,57 +248,79 @@ async function readCasText(recorder: ProvenanceRecorder, hash: string): Promise<
  * a delimiter or newline inside a quoted field is data, and a doubled quote
  * inside a quoted field is one quote. A quote only opens a field at its start,
  * so an apostrophe mid-cell is left alone. Blank lines stay out, as before.
+ *
+ * A field is kept as spans of the source and only joined when the field ends,
+ * so an ordinary run costs one `slice` instead of one concatenation per
+ * character. A file whose only cell opens a quote and never closes it is one
+ * field over the whole file: built character by character that is quadratic
+ * string garbage on a preview request, and it stays linear here.
  */
 function splitDelimited(source: string, delimiter: string): string[][] {
   const records: string[][] = [];
   let record: string[] = [];
-  let field = "";
+  // Completed spans of the field being read; `spanStart` opens the one still
+  // pending. Only an escaped quote (`""`) closes a span before the field ends.
+  let parts: string[] = [];
+  let spanStart = 0;
   let quoted = false;
   let touched = false;
-  const endRecord = () => {
+
+  const pushSpan = (end: number) => {
+    if (end > spanStart) parts.push(source.slice(spanStart, end));
+  };
+  const endField = (end: number) => {
+    pushSpan(end);
+    record.push(parts.length === 1 ? parts[0] ?? "" : parts.join(""));
+    parts = [];
+  };
+  const endRecord = (end: number) => {
     if (touched) {
-      record.push(field);
+      endField(end);
       records.push(record);
     }
     record = [];
-    field = "";
+    parts = [];
     touched = false;
   };
   for (let index = 0; index < source.length; index += 1) {
     const char = source.charAt(index);
     if (quoted) {
       if (char === '"' && source.charAt(index + 1) === '"') {
-        field += '"';
+        pushSpan(index);
+        parts.push('"');
         index += 1;
+        spanStart = index + 1;
       } else if (char === '"') {
+        pushSpan(index);
         quoted = false;
-      } else {
-        field += char;
+        spanStart = index + 1;
       }
       touched = true;
       continue;
     }
-    if (char === '"' && field.length === 0) {
+    if (char === '"' && parts.length === 0 && spanStart === index) {
       quoted = true;
       touched = true;
+      spanStart = index + 1;
       continue;
     }
     if (char === delimiter) {
-      record.push(field);
-      field = "";
+      endField(index);
+      spanStart = index + 1;
       touched = true;
       continue;
     }
     if (char === "\n" || char === "\r") {
+      const terminator = index;
       if (char === "\r" && source.charAt(index + 1) === "\n") index += 1;
-      endRecord();
+      endRecord(terminator);
+      spanStart = index + 1;
       continue;
     }
-    field += char;
     touched = true;
   }
   if (touched || record.length > 0) {
-    record.push(field);
+    endField(source.length);
     records.push(record);
   }
   return records;
