@@ -320,10 +320,16 @@ function localDateBucket(date = new Date()): string {
   return `${year}-${month}-${day}`;
 }
 
-function localDateBucketDaysAgo(days: number): string {
-  const date = new Date();
-  date.setDate(date.getDate() - Math.max(0, days - 1));
-  return localDateBucket(date);
+/**
+ * The day range a date preset covers, taken from the zone the page buckets
+ * invocations by so the preset and the filter can never disagree. Without a
+ * reporting zone the browser's own calendar day is the fallback.
+ */
+export function usagePresetDateRange(days: number, timeZone?: string, now = new Date()): { from: string; to: string } {
+  const to = timeZone ? usageSummaryDateBucket(now.toISOString(), timeZone) : localDateBucket(now);
+  const [year = 0, month = 1, day = 1] = to.split("-").map(Number);
+  const from = new Date(Date.UTC(year, month - 1, day - Math.max(0, days - 1))).toISOString().slice(0, 10);
+  return { from, to };
 }
 
 export interface UsageAnalyticsUiFilters {
@@ -464,10 +470,12 @@ function UsageFilters({
   filters,
   modelGroups,
   onChange,
+  timeZone,
 }: {
   filters: UsageAnalyticsUiFilters;
   modelGroups: GlobalUsageModelGroup[];
   onChange: (filters: UsageAnalyticsUiFilters) => void;
+  timeZone?: string;
 }) {
   const { t } = useLocale();
   const modelOptions = useMemo(() => modelGroups.toSorted((left, right) =>
@@ -480,7 +488,7 @@ function UsageFilters({
     onChange(next);
   };
   const applyPreset = (days: number) => {
-    onChange({ ...filters, from: localDateBucketDaysAgo(days), to: localDateBucket() });
+    onChange({ ...filters, ...usagePresetDateRange(days, timeZone) });
   };
   const clearFilters = () => onChange({});
   return (
@@ -1012,7 +1020,7 @@ export function UsagePage({
         ) : null}
         {analytics ? <UsageOverview analytics={analytics} displayCurrency={displayCurrency} /> : null}
         {summary && hasAnyStoredUsage ? (
-          <UsageFilters filters={filters} modelGroups={summary.byModel} onChange={onFiltersChange} />
+          <UsageFilters filters={filters} modelGroups={summary.byModel} onChange={onFiltersChange} timeZone={analytics?.filters.timeZone} />
         ) : null}
       </header>
       {loading ? (
