@@ -491,6 +491,62 @@ test("structure preview counts atoms in the .structure.json atom bag", async (co
   assert.equal(payload.atomCount, 2);
 });
 
+test("structure preview does not claim truncation when the whole source is returned", async (context) => {
+  const fixture = await createFixture(context);
+  const pdb = Array.from({ length: 9_000 }, (_, index) => `ATOM  ${String(index + 1).padStart(5)}  C   ALA A   1`).join("\n");
+  const vid = await seedArtifact(fixture, {
+    content: pdb,
+    kind: "structure",
+    logicalName: "many.pdb",
+    mediaType: "chemical/x-pdb",
+  });
+  const payload = await buildArtifactVersionPreview(
+    fixture.store, fixture.recorder, fixture.session.id, vid, undefined, "1000000",
+  );
+  if (payload.mode !== "structure-source") assert.fail(`unexpected mode: ${payload.mode}`);
+  assert.equal(payload.atomCount, 9_000);
+  assert.equal(payload.source.length, pdb.length);
+  assert.equal(payload.truncated, false);
+  assert.match((payload as { note?: string }).note ?? "", /8,000 atoms/);
+});
+
+test("structure preview reports truncation when maxChars cuts the source", async (context) => {
+  const fixture = await createFixture(context);
+  const pdb = Array.from({ length: 200 }, (_, index) => `ATOM  ${String(index + 1).padStart(5)}  C   ALA A   1`).join("\n");
+  const vid = await seedArtifact(fixture, {
+    content: pdb,
+    kind: "structure",
+    logicalName: "long.pdb",
+    mediaType: "chemical/x-pdb",
+  });
+  const payload = await buildArtifactVersionPreview(
+    fixture.store, fixture.recorder, fixture.session.id, vid, undefined, "400",
+  );
+  if (payload.mode !== "structure-source") assert.fail(`unexpected mode: ${payload.mode}`);
+  assert.equal(payload.truncated, true);
+  assert.equal(payload.source.length, 400);
+  assert.equal(payload.totalChars, pdb.length);
+  assert.equal(payload.source, pdb.slice(0, 400));
+});
+
+test("structure preview at exactly maxChars returns the whole source without truncation", async (context) => {
+  const fixture = await createFixture(context);
+  const source = `HEADER ${"X".repeat(93)}`;
+  assert.equal(source.length, 100);
+  const vid = await seedArtifact(fixture, {
+    content: source,
+    kind: "structure",
+    logicalName: "boundary.pdb",
+    mediaType: "chemical/x-pdb",
+  });
+  const payload = await buildArtifactVersionPreview(
+    fixture.store, fixture.recorder, fixture.session.id, vid, undefined, "100",
+  );
+  if (payload.mode !== "structure-source") assert.fail(`unexpected mode: ${payload.mode}`);
+  assert.equal(payload.truncated, false);
+  assert.equal(payload.source, source);
+});
+
 test("figure preview surfaces the content URL without reading CAS bytes", async (context) => {
   const fixture = await createFixture(context);
   const vid = await seedArtifact(fixture, {
