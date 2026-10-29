@@ -370,16 +370,17 @@ function countStructureAtoms(source: string): number {
   return count;
 }
 
-function parseNotebook(source: string, maxCells: number): { cells: NotebookCell[]; totalCells: number } {
+function parseNotebook(source: string, maxCells: number): { cells: NotebookCell[]; totalCells: number; truncated: boolean } {
   let parsed: { cells?: unknown };
   try {
     parsed = JSON.parse(source) as { cells?: unknown };
   } catch {
-    return { cells: [], totalCells: 0 };
+    return { cells: [], totalCells: 0, truncated: false };
   }
   const rawCells = Array.isArray(parsed.cells) ? parsed.cells : [];
   const totalCells = rawCells.length;
-  const cells = rawCells.slice(0, maxCells).map<NotebookCell | undefined>((cell) => {
+  // Unsupported cells must not consume the preview budget, so map and filter first.
+  const supported = rawCells.map<NotebookCell | undefined>((cell) => {
     if (!cell || typeof cell !== "object") return undefined;
     const entry = cell as { cell_type?: unknown; source?: unknown; execution_count?: unknown };
     const cellType = entry.cell_type;
@@ -399,7 +400,8 @@ function parseNotebook(source: string, maxCells: number): { cells: NotebookCell[
       ...(executionCount !== undefined ? { execution_count: executionCount } : {}),
     };
   }).filter((cell): cell is NotebookCell => cell !== undefined);
-  return { cells, totalCells };
+  // totalCells describes the document; truncated only means a supported cell is hidden.
+  return { cells: supported.slice(0, maxCells), totalCells, truncated: supported.length > maxCells };
 }
 
 export async function buildArtifactVersionPreview(
@@ -534,14 +536,14 @@ export async function buildArtifactVersionPreview(
     }
     case "notebook": {
       const source = await readCasText(recorder, version.content.hash);
-      const { cells, totalCells } = parseNotebook(source, maxCells);
+      const { cells, totalCells, truncated } = parseNotebook(source, maxCells);
       return {
         version,
         kind,
         mode: "notebook-cells",
         cells,
         totalCells,
-        truncated: totalCells > maxCells,
+        truncated,
         editable: false,
       };
     }

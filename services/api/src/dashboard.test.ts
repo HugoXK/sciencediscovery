@@ -224,6 +224,31 @@ test("notebook preview truncates to maxCells", async (context) => {
   assert.equal(payload.truncated, true);
 });
 
+test("notebook preview fills maxCells with valid cells after skipping unsupported cell types", async (context) => {
+  const fixture = await createFixture(context);
+  const ipynb = JSON.stringify({
+    cells: [
+      { cell_type: "heading", source: "# not a supported cell" },
+      { cell_type: "code", source: "print(1)", execution_count: 1 },
+      { cell_type: "code", source: "print(2)", execution_count: 2 },
+    ],
+  });
+  const vid = await seedArtifact(fixture, {
+    content: ipynb,
+    kind: "notebook",
+    logicalName: "analysis.ipynb",
+    mediaType: "application/x-ipynb+json",
+  });
+  const payload = await buildArtifactVersionPreview(
+    fixture.store, fixture.recorder, fixture.session.id, vid, undefined, undefined, "2",
+  );
+  if (payload.mode !== "notebook-cells") assert.fail(`unexpected mode: ${payload.mode}`);
+  assert.equal(payload.totalCells, 3);
+  assert.equal(payload.cells.length, 2, "unsupported cells must not consume the maxCells budget");
+  assert.deepEqual(payload.cells.map((cell) => cell.cell_type), ["code", "code"]);
+  assert.equal(payload.truncated, false, "dropping an unsupported cell is not truncation");
+});
+
 test("markdown preview truncates to maxChars", async (context) => {
   const fixture = await createFixture(context);
   const big = "a".repeat(10_000);
