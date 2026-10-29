@@ -3,7 +3,7 @@
 
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { link, lstat, mkdir, open, readdir, readFile, readlink, rm, stat, type FileHandle } from "node:fs/promises";
+import { link, lstat, mkdir, open, readdir, readFile, readlink, rm, type FileHandle } from "node:fs/promises";
 import { dirname, resolve, toNamespacedPath } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
@@ -100,8 +100,10 @@ export class VersionStore {
    * a record together with their whole dependency closure. CAS objects are
    * never rewritten or deleted, so ref commits stop at admitted objects instead
    * of rehashing history. Trust boundary: nothing outside this store changes an
-   * object after this process verified it. Reads, full audits and new instances
-   * still rehash; file metadata is never taken as evidence.
+   * object after this process verified it. Admission says only that this instance
+   * saw those bytes; existence is re-checked on every admitted read, and reads,
+   * full audits and new instances still rehash. File metadata is never taken as
+   * evidence of content.
    */
   private readonly admitted = new Map<string, boolean>();
   /** Bumped when admission is revoked, so an in-flight validation cannot re-admit a stale closure. */
@@ -145,13 +147,11 @@ export class VersionStore {
     if (size !== ref.size || digest.digest("hex") !== ref.digest.slice(7)) return undefined;
     const key = admissionKey(ref);
     if (this.admitted.has(key)) {
-      // Admission says the bytes were verified, not that the object is still there: an object can
-      // disappear under a live process (restore, cleanup of the same dataDir, disk fault). One stat
+      // An object can disappear under a live process (restore, cleanup of the same dataDir, disk
+      // fault), and admission covers the bytes, not their continued presence. Re-checking existence
       // keeps the republish path self-healing for a cost that is noise next to the source re-hash.
-      try { await stat(this.objectPath(ref)); } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-        return undefined;
-      }
+      await this.dropIfVanished(ref);
+      if (!this.admitted.has(key)) return undefined;
     } else {
       try { await this.verifyRef(ref); } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
@@ -260,6 +260,19 @@ export class VersionStore {
     }
   }
 
+  /**
+   * Admission is existence evidence, not content evidence, and the guard is one-directional — a hit
+   * proves only that a regular file is still there, never that its bytes are the ones verified. A
+   * missing object, or one replaced by a directory or a symlink, revokes every admission so the caller
+   * falls back to its own read or verify path, which fails closed on bytes that are not there.
+   */
+  private async dropIfVanished(ref: ObjectRef): Promise<void> {
+    try { if ((await lstat(this.objectPath(ref))).isFile()) return; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+    this.admitted.clear();
+    this.admissionGeneration++;
+  }
+
   async putRecord<T>(kind: string, value: T, dependencies: ObjectRef[] = []): Promise<AgentStateRef> {
     for (const ref of dependencies) assertRef(ref);
     // Dependencies embedded in values cannot silently escape closure validation.
@@ -320,6 +333,10 @@ export class VersionStore {
       if (visited.has(key)) continue;
       visited.add(key);
       const asRecord = ref.mediaType === RECORD_MEDIA_TYPE;
+      // Both admitted readers re-check existence first: an admission covers bytes this instance
+      // verified, not their continued presence, so a vanished object must be verified (and fail) instead
+      // of being skipped as an already-checked closure.
+      if (trustAdmitted && this.admitted.has(admissionKey(ref))) await this.dropIfVanished(ref);
       const known = this.admitted.get(admissionKey(ref));
       // An admitted record already had its closure verified, so stop here.
       if (trustAdmitted && (known === true || (known === false && !asRecord))) continue;
