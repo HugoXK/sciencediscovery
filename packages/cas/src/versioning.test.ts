@@ -11,6 +11,7 @@ const built = (name: string) => new URL(`dist/${name}`, new URL("..", new URL(".
 
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, open, readFile, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
@@ -336,5 +337,23 @@ test("a cache hit does not re-read the stored object on every call", async (t) =
     await file.write(Buffer.from(rewritten), 0, rewritten.length, 0);
     const fourth = await store.putWorkspaceFile(Buffer.from(path), file);
     assert.notEqual(fourth.digest, first.digest, "cached object verification must not become the reuse criterion");
+  } finally { await file.close(); }
+}));
+
+test("a cache hit republishes a stored object that disappeared after its first verification", async () => fixture(async (store, root) => {
+  const path = resolve(root, "missing-object");
+  const body = "the object is removed while the store keeps its admission";
+  await writeFile(path, body);
+  const file = await open(path, "r+");
+  try {
+    const first = await store.putWorkspaceFile(Buffer.from(path), file);
+    const second = await store.putWorkspaceFile(Buffer.from(path), file); // admitted after this hit
+    assert.deepEqual(second, first);
+    await rm(store.objectPath(second));
+    assert.equal(existsSync(store.objectPath(second)), false);
+    const third = await store.putWorkspaceFile(Buffer.from(path), file);
+    assert.deepEqual(third, first);
+    assert.equal(existsSync(store.objectPath(third)), true, "a cache hit must republish a vanished object instead of reusing a dangling ref");
+    assert.equal((await store.readData(third)).toString(), body);
   } finally { await file.close(); }
 }));

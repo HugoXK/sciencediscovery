@@ -3,7 +3,7 @@
 
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { link, lstat, mkdir, open, readdir, readFile, readlink, rm, type FileHandle } from "node:fs/promises";
+import { link, lstat, mkdir, open, readdir, readFile, readlink, rm, stat, type FileHandle } from "node:fs/promises";
 import { dirname, resolve, toNamespacedPath } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
@@ -144,7 +144,15 @@ export class VersionStore {
     }
     if (size !== ref.size || digest.digest("hex") !== ref.digest.slice(7)) return undefined;
     const key = admissionKey(ref);
-    if (!this.admitted.has(key)) {
+    if (this.admitted.has(key)) {
+      // Admission says the bytes were verified, not that the object is still there: an object can
+      // disappear under a live process (restore, cleanup of the same dataDir, disk fault). One stat
+      // keeps the republish path self-healing for a cost that is noise next to the source re-hash.
+      try { await stat(this.objectPath(ref)); } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        return undefined;
+      }
+    } else {
       try { await this.verifyRef(ref); } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
         return undefined;
