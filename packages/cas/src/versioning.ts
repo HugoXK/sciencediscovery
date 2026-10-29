@@ -106,25 +106,47 @@ export class VersionStore {
   private readonly admitted = new Map<string, boolean>();
   /** Bumped when admission is revoked, so an in-flight validation cannot re-admit a stale closure. */
   private admissionGeneration = 0;
-  private readonly workspaceFiles = new Map<string, { source: ObjectIdentity; object: ObjectIdentity; ref: DataRef }>();
+  /** Refs whose bytes this store hashed; reuse still re-derives the digest on every call. */
+  private readonly workspaceFiles = new Map<string, { source: ObjectIdentity; ref: DataRef }>();
   constructor(readonly dataDir: string) {}
 
-  /** Reuse only bytes already hashed by this store, while both file identities remain unchanged. */
+  /**
+   * Reuse only bytes this store has already hashed, after re-deriving the digest of the
+   * current bytes and re-verifying the stored object. Metadata narrows the work but is
+   * never evidence: a same-size in-place rewrite keeps every stat field of its tick.
+   */
   async putWorkspaceFile(path: Buffer, file: FileHandle): Promise<DataRef> {
     const key = path.toString("base64");
     const before = await file.stat({ bigint: true });
     const cached = this.workspaceFiles.get(key);
     if (cached && this.sameIdentity(before, cached.source)) {
-      let object: ObjectIdentity | undefined;
-      try { object = await this.objectIdentity(cached.ref); }
-      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-      if (object && this.sameIdentity(object, cached.object)) return cached.ref;
+      const source = await this.unchangedWorkspaceBytes(file, before, cached.ref);
+      if (source) { this.workspaceFiles.set(key, { source, ref: cached.ref }); return cached.ref; }
     }
     const ref = await this.putStream("data", file.createReadStream({ autoClose: false, start: 0 }));
     const after = await file.stat({ bigint: true });
     if (!this.sameIdentity(before, after)) throw new Error("Workspace changed during snapshot");
-    this.workspaceFiles.set(key, { source: after, object: await this.objectIdentity(ref), ref });
+    this.workspaceFiles.set(key, { source: after, ref });
     return ref;
+  }
+
+  /**
+   * The post-read identity when the handle still holds exactly the cached bytes and the
+   * stored object still verifies; undefined means the bytes must be republished.
+   */
+  private async unchangedWorkspaceBytes(file: FileHandle, before: ObjectIdentity, ref: DataRef): Promise<ObjectIdentity | undefined> {
+    const digest = createHash("sha256"); let size = 0;
+    for await (const chunk of file.createReadStream({ autoClose: false, start: 0 })) {
+      const bytes = chunk as Buffer; digest.update(bytes); size += bytes.length;
+    }
+    if (size !== ref.size || digest.digest("hex") !== ref.digest.slice(7)) return undefined;
+    try { await this.verifyRef(ref); } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      return undefined;
+    }
+    const after = await file.stat({ bigint: true });
+    if (!this.sameIdentity(before, after)) throw new Error("Workspace changed during snapshot");
+    return after;
   }
 
   poolRoot(pool: Pool): string { return resolve(this.dataDir, "versioning", pool); }
@@ -261,12 +283,6 @@ export class VersionStore {
     };
     verifyEdges(record.value);
     return record;
-  }
-
-  private async objectIdentity(ref: ObjectRef): Promise<ObjectIdentity> {
-    const info = await lstat(this.objectPath(ref), { bigint: true });
-    if (!info.isFile() || info.size !== BigInt(ref.size)) throw new Error("Object integrity failure");
-    return { dev: info.dev, ino: info.ino, size: info.size, mtimeNs: info.mtimeNs, ctimeNs: info.ctimeNs };
   }
 
   private sameIdentity(left: ObjectIdentity, right: ObjectIdentity): boolean {
