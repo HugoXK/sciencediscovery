@@ -250,10 +250,17 @@ function bucketFromInvocations(key: string, label: string, invocations: ModelInv
   return bucket;
 }
 
+/**
+ * The zone usage is bucketed by when the page has not been told another one.
+ * The filter and the date presets both read it, so the two can never pick
+ * different calendar days.
+ */
+export const DEFAULT_USAGE_TIME_ZONE = "Asia/Shanghai";
+
 export function filterGlobalUsageSummary(
   summary: GlobalModelUsageSummary,
   filters: UsageAnalyticsUiFilters,
-  timeZone = "Asia/Shanghai",
+  timeZone = DEFAULT_USAGE_TIME_ZONE,
 ): GlobalModelUsageSummary {
   const byModel: GlobalUsageModelGroup[] = [];
   const allInvocations: ModelInvocationUsage[] = [];
@@ -313,20 +320,13 @@ export function filterGlobalUsageSummary(
   };
 }
 
-function localDateBucket(date = new Date()): string {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
-
 /**
  * The day range a date preset covers, taken from the zone the page buckets
  * invocations by so the preset and the filter can never disagree. Without a
- * reporting zone the browser's own calendar day is the fallback.
+ * reporting zone the shared default zone applies.
  */
-export function usagePresetDateRange(days: number, timeZone?: string, now = new Date()): { from: string; to: string } {
-  const to = timeZone ? usageSummaryDateBucket(now.toISOString(), timeZone) : localDateBucket(now);
+export function usagePresetDateRange(days: number, timeZone = DEFAULT_USAGE_TIME_ZONE, now = new Date()): { from: string; to: string } {
+  const to = usageSummaryDateBucket(now.toISOString(), timeZone || DEFAULT_USAGE_TIME_ZONE);
   const [year = 0, month = 1, day = 1] = to.split("-").map(Number);
   const from = new Date(Date.UTC(year, month - 1, day - Math.max(0, days - 1))).toISOString().slice(0, 10);
   return { from, to };
