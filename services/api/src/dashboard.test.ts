@@ -380,6 +380,24 @@ test("a dataset preview without a BOM keeps every header cell unchanged", async 
   }
 });
 
+test("a dataset preview keeps a BOM that starts a data row, because only the file prefix is a marker", async (context) => {
+  const fixture = await createFixture(context);
+  // Only the leading marker is encoding metadata; the same code point inside the
+  // document is a character the cell really contains, so it must survive.
+  const vid = await seedArtifact(fixture, {
+    content: "\uFEFFname,note\n\uFEFFAlice,1\n",
+    kind: "dataset",
+    logicalName: "bom-row.csv",
+    mediaType: "text/csv",
+  });
+  const payload = await buildArtifactVersionPreview(
+    fixture.store, fixture.recorder, fixture.session.id, vid,
+  );
+  if (payload.mode !== "dataset-table") assert.fail(`unexpected mode: ${payload.mode}`);
+  assert.deepEqual(payload.columns, ["name", "note"]);
+  assert.deepEqual(payload.rows[0], ["\uFEFFAlice", "1"]);
+});
+
 test("json preview keeps the dataset table for record arrays", async (context) => {
   const fixture = await createFixture(context);
   const vid = await seedArtifact(fixture, {
