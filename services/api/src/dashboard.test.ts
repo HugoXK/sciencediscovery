@@ -352,6 +352,42 @@ test("json preview returns formatted JSON for a plain object instead of an empty
   assert.equal(payload.totalChars, payload.source.length);
 });
 
+test("a json artifact of empty objects renders as JSON text, not an empty grid", async (context) => {
+  const fixture = await createFixture(context);
+  for (const [name, records] of [
+    ["empty-two.json", [{}, {}]],
+    ["empty-one.json", [{}]],
+  ] as const) {
+    const vid = await seedArtifact(fixture, {
+      content: JSON.stringify(records),
+      kind: "json",
+      logicalName: name,
+      mediaType: "application/json",
+    });
+    const payload = await buildArtifactVersionPreview(fixture.store, fixture.recorder, fixture.session.id, vid);
+    if (payload.mode !== "json-source") assert.fail(`${name}: unexpected mode ${payload.mode}`);
+    assert.equal(payload.parsed, true);
+    assert.equal(payload.source, JSON.stringify(records, null, 2));
+    assert.equal(payload.totalChars, payload.source.length);
+    assert.equal(payload.truncated, false);
+  }
+});
+
+test("json preview keeps the table when record arrays carry keys", async (context) => {
+  const fixture = await createFixture(context);
+  const vid = await seedArtifact(fixture, {
+    content: JSON.stringify([{ a: 1 }, { a: 2 }]),
+    kind: "json",
+    logicalName: "rows.json",
+    mediaType: "application/json",
+  });
+  const payload = await buildArtifactVersionPreview(fixture.store, fixture.recorder, fixture.session.id, vid);
+  if (payload.mode !== "dataset-table") assert.fail(`unexpected mode: ${payload.mode}`);
+  assert.deepEqual(payload.columns, ["a"]);
+  assert.deepEqual(payload.rows, [["1"], ["2"]]);
+  assert.equal(payload.totalRows, 2);
+});
+
 test("json preview returns json-source for arrays that are not record arrays", async (context) => {
   const fixture = await createFixture(context);
   for (const [name, content] of [
