@@ -312,6 +312,40 @@ test("a dropped frame does not swallow a complete frame carried in the same chun
   assert.deepEqual(decoder.takeSkipped(), []);
 });
 
+test("an empty chunk does not lose the carried newline while discarding", () => {
+  // An empty chunk carries no information. It must not clear the carried `\n`,
+  // or the next chunk's own blank line is taken as the dropped frame's
+  // terminator and the frame it belongs to is swallowed.
+  const decoder = new SseFrameDecoder();
+  decoder.push('id: 7\ndata: {"type":"assistant.delta","delta":"');
+  decoder.push("x".repeat(MAX_FRAME_CHARACTERS + 1));
+  assert.deepEqual(decoder.takeSkipped(), [7]);
+  // The dropped frame's tail ends with the blank line's first newline.
+  assert.deepEqual(decoder.push("more tail\n"), []);
+  assert.deepEqual(decoder.push(""), []);
+  assert.deepEqual(decoder.push('\nid: 8\ndata: {"type":"run.status"}\n\n'), [
+    { data: '{"type":"run.status"}', id: 8 },
+  ]);
+  // One dropped frame is one skip.
+  assert.deepEqual(decoder.takeSkipped(), []);
+});
+
+test("a lone carriage return between the two halves of a blank line keeps the resync", () => {
+  // A CRLF blank line can be split by a one-byte read: the lone `\r` arrives
+  // as its own chunk and normalizes to "". It must be held for the `\n` that
+  // follows, not treated as "this chunk does not end with a newline".
+  const decoder = new SseFrameDecoder();
+  decoder.push('id: 7\ndata: {"type":"assistant.delta","delta":"');
+  decoder.push("x".repeat(MAX_FRAME_CHARACTERS + 1));
+  assert.deepEqual(decoder.takeSkipped(), [7]);
+  assert.deepEqual(decoder.push("more tail\n"), []);
+  assert.deepEqual(decoder.push("\r"), []);
+  assert.deepEqual(decoder.push('\nid: 9\ndata: {"type":"run.status"}\n\n'), [
+    { data: '{"type":"run.status"}', id: 9 },
+  ]);
+  assert.deepEqual(decoder.takeSkipped(), []);
+});
+
 test("a frame exactly at the ceiling still parses when its terminator is split", () => {
   // The blank line's first `\n` is framing, not payload: at exactly the ceiling
   // it must not push the retained frame over the cap and get the frame dropped.

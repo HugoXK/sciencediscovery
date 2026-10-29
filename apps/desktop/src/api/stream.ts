@@ -89,6 +89,11 @@ export class SseFrameDecoder {
       chunk = chunk.slice(0, -1);
     }
     chunk = chunk.replace(/\r\n/g, "\n");
+    // An empty chunk after normalization carries no information, and returning
+    // here is what keeps the discard carry: a lone "\r" normalizes to "" and
+    // must not be allowed to clear `sawOneNewlineWhileDiscarding`, or the next
+    // chunk's own blank line is taken as the dropped frame's terminator.
+    if (chunk === "") return [];
     if (this.discarding) {
       // The carried `\n` wins over an in-chunk `\n\n`: when the last chunk
       // ended with `\n` and this one opens with `\n`, those two bytes are the
