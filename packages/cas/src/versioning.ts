@@ -106,7 +106,7 @@ export class VersionStore {
   private readonly admitted = new Map<string, boolean>();
   /** Bumped when admission is revoked, so an in-flight validation cannot re-admit a stale closure. */
   private admissionGeneration = 0;
-  /** Refs whose bytes this store hashed; reuse still re-derives the digest on every call. */
+  /** Refs whose bytes this store hashed; reuse still re-derives the source digest on every call. */
   private readonly workspaceFiles = new Map<string, { source: ObjectIdentity; ref: DataRef }>();
   constructor(readonly dataDir: string) {}
 
@@ -114,6 +114,8 @@ export class VersionStore {
    * Reuse only bytes this store has already hashed, after re-deriving the digest of the
    * current bytes and re-verifying the stored object. Metadata narrows the work but is
    * never evidence: a same-size in-place rewrite keeps every stat field of its tick.
+   * The source bytes are re-hashed on every call; the stored object is verified once per
+   * store instance, because it is content-addressed and this process writes it once.
    */
   async putWorkspaceFile(path: Buffer, file: FileHandle): Promise<DataRef> {
     const key = path.toString("base64");
@@ -132,7 +134,8 @@ export class VersionStore {
 
   /**
    * The post-read identity when the handle still holds exactly the cached bytes and the
-   * stored object still verifies; undefined means the bytes must be republished.
+   * stored object still verifies; undefined means the bytes must be republished. An object
+   * this instance already verified is admitted instead of read a second time.
    */
   private async unchangedWorkspaceBytes(file: FileHandle, before: ObjectIdentity, ref: DataRef): Promise<ObjectIdentity | undefined> {
     const digest = createHash("sha256"); let size = 0;
@@ -140,9 +143,13 @@ export class VersionStore {
       const bytes = chunk as Buffer; digest.update(bytes); size += bytes.length;
     }
     if (size !== ref.size || digest.digest("hex") !== ref.digest.slice(7)) return undefined;
-    try { await this.verifyRef(ref); } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-      return undefined;
+    const key = admissionKey(ref);
+    if (!this.admitted.has(key)) {
+      try { await this.verifyRef(ref); } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        return undefined;
+      }
+      this.admitted.set(key, false); // verified here as a non-record; `checked` revokes it on any integrity failure
     }
     const after = await file.stat({ bigint: true });
     if (!this.sameIdentity(before, after)) throw new Error("Workspace changed during snapshot");
