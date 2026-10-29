@@ -1027,6 +1027,9 @@ async function streamResponsesTurn(
       callbacks.onTextDelta?.(event.delta);
     } else if ((event.type === "response.reasoning_text.delta" || event.type === "response.reasoning_summary_text.delta")
       && typeof event.delta === "string") {
+      // Delta-only providers never send `output_item.done`, so the record has to
+      // learn about the thinking here as well.
+      recorder.reasoning(event.delta);
       callbacks.onThinkingDelta?.(event.delta);
     } else if (event.type === "response.output_item.added" && isRecord(event.item)) {
       const index = typeof event.output_index === "number" ? event.output_index : partialItems.size;
@@ -1082,7 +1085,13 @@ async function streamResponsesTurn(
     const parsed = parseToolCallArgs(call.function.arguments);
     return { args: parsed.args, id: call.id, name: call.function.name, ...(parsed.error ? { argsParseError: parsed.error } : {}) };
   });
-  recorder.final({ hasText: Boolean(text.trim()), hasToolCalls: toolCalls.length > 0, truncated });
+  recorder.final({
+    hasText: Boolean(text.trim()),
+    hasToolCalls: toolCalls.length > 0,
+    truncated,
+    hasReasoning: responseItems.some((item) => item.type === "reasoning"
+      && Boolean(reasoningText(item.summary ?? item.content).trim())),
+  });
   return {
     assistantMessage: {
       role: "assistant",
@@ -1204,7 +1213,10 @@ async function streamAnthropicTurn(
     } else if (event.type === "content_block_start" && typeof event.index === "number" && isRecord(event.content_block)) {
       blocks.set(event.index, structuredClone(event.content_block));
       if (event.content_block.type === "text" && typeof event.content_block.text === "string" && event.content_block.text) callbacks.onTextDelta?.(event.content_block.text);
-      if (event.content_block.type === "thinking" && typeof event.content_block.thinking === "string" && event.content_block.thinking) callbacks.onThinkingDelta?.(event.content_block.thinking);
+      if (event.content_block.type === "thinking" && typeof event.content_block.thinking === "string" && event.content_block.thinking) {
+        recorder.reasoning(event.content_block.thinking);
+        callbacks.onThinkingDelta?.(event.content_block.thinking);
+      }
       if (event.content_block.type === "tool_use") {
         toolJson.set(event.index, "");
         emitTool(event.index, event.content_block.id, event.content_block.name, "");
@@ -1217,6 +1229,7 @@ async function streamAnthropicTurn(
         callbacks.onTextDelta?.(event.delta.text);
       } else if (event.delta.type === "thinking_delta" && typeof event.delta.thinking === "string") {
         block.thinking = `${typeof block.thinking === "string" ? block.thinking : ""}${event.delta.thinking}`;
+        recorder.reasoning(event.delta.thinking);
         callbacks.onThinkingDelta?.(event.delta.thinking);
       } else if (event.delta.type === "signature_delta" && typeof event.delta.signature === "string") {
         block.signature = `${typeof block.signature === "string" ? block.signature : ""}${event.delta.signature}`;
@@ -1266,7 +1279,13 @@ async function streamAnthropicTurn(
     const parsed = parseToolCallArgs(call.function.arguments);
     return { args: parsed.args, id: call.id, name: call.function.name, ...(toolErrors.get(call.id) || parsed.error ? { argsParseError: toolErrors.get(call.id) ?? parsed.error } : {}) };
   });
-  recorder.final({ hasText: Boolean(text.trim()), hasToolCalls: toolCalls.length > 0, truncated });
+  recorder.final({
+    hasText: Boolean(text.trim()),
+    hasToolCalls: toolCalls.length > 0,
+    truncated,
+    hasReasoning: anthropicContent.some((block) => block.type === "thinking"
+      && typeof block.thinking === "string" && Boolean(block.thinking.trim())),
+  });
   return {
     assistantMessage: {
       role: "assistant",

@@ -249,6 +249,62 @@ for (const shape of ["reasoning-only", "nothing-at-all"] as const) test(`an empt
   });
 });
 
+// The shape above is the chat-completions dialect. The other two dialects carry
+// thinking on their own event names, and a provider may stream only those: if the
+// recorder never sees them, a thinking-only turn is reported as a genuinely empty
+// relay answer — the exact confusion this classification exists to prevent.
+test("an Anthropic thinking-only turn is classified reasoning_only, not an empty answer", async () => {
+  await withServer(async (request, response) => {
+    await readBody(request);
+    sse(response, [
+      { type: "message_start", message: { usage: { input_tokens: 9 } } },
+      { type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "" } },
+      { type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "weighed the evidence, wrote nothing" } },
+      { type: "content_block_stop", index: 0 },
+      { type: "message_delta", usage: { output_tokens: 12 }, delta: { stop_reason: "end_turn" } },
+      { type: "message_stop" },
+    ]);
+  }, async (baseUrl) => {
+    const seen: ModelWireDiagnostics[] = [];
+    const failure = await streamModelTurn({ apiProtocol: "anthropic-messages", baseUrl, model: "claude-stub" },
+      "s", [{ role: "user", content: "synthetic" }], [], { ...policy, maxRetries: 0 }, AbortSignal.timeout(5_000),
+      { onWireDiagnostics: (diagnostics) => seen.push(diagnostics), rejectEmptyTerminalTurn: true })
+      .then(() => null, (error) => error);
+    assert.ok(failure instanceof EmptyModelTurnError, "an empty terminal turn is still a failure");
+    assert.equal(seen.length, 1, "one summary per request");
+    const record = seen[0]!;
+    assert.equal(record.hasText, false);
+    assert.equal(record.hasToolCalls, false);
+    assert.equal(record.hasReasoning, true, "the recorder saw the thinking deltas");
+    assert.deepEqual(record.error, { classification: "reasoning_only" });
+    assert.equal(classifyModelWireError(failure), "reasoning_only");
+  });
+});
+
+test("a Responses stream that only sends reasoning deltas is classified reasoning_only", async () => {
+  await withServer(async (request, response) => {
+    await readBody(request);
+    sse(response, [
+      { type: "response.reasoning_text.delta", delta: "weighed the evidence, wrote nothing" },
+      { type: "response.completed", response: { usage: {} } },
+    ]);
+  }, async (baseUrl) => {
+    const seen: ModelWireDiagnostics[] = [];
+    const failure = await streamModelTurn({ apiProtocol: "openai-responses", baseUrl, model: "stub" },
+      "s", [{ role: "user", content: "synthetic" }], [], { ...policy, maxRetries: 0 }, AbortSignal.timeout(5_000),
+      { onWireDiagnostics: (diagnostics) => seen.push(diagnostics), rejectEmptyTerminalTurn: true })
+      .then(() => null, (error) => error);
+    assert.ok(failure instanceof EmptyModelTurnError, "a delta-only reasoning stream is still a failure");
+    assert.equal(seen.length, 1, "one summary per request");
+    const record = seen[0]!;
+    assert.equal(record.hasText, false);
+    assert.equal(record.hasToolCalls, false);
+    assert.equal(record.hasReasoning, true, "reasoning deltas alone must count as thinking");
+    assert.deepEqual(record.error, { classification: "reasoning_only" });
+    assert.equal(classifyModelWireError(failure), "reasoning_only");
+  });
+});
+
 test("an installed catalog narrows thinking and pricing exactly as the snapshot states", () => {
   installTestModelCatalog();
   assert.deepEqual(lookupModelCatalog("gpt-5.5", "openai")!.thinking!.efforts, ["low", "medium", "high", "xhigh"]);
