@@ -351,9 +351,26 @@ test("a cache hit republishes a stored object that disappeared after its first v
     assert.deepEqual(second, first);
     await rm(store.objectPath(second));
     assert.equal(existsSync(store.objectPath(second)), false);
+    // Losing the object revokes the admission, never the integrity check: reads still fail closed.
+    await assert.rejects(store.readData(second), { code: "ENOENT" });
     const third = await store.putWorkspaceFile(Buffer.from(path), file);
     assert.deepEqual(third, first);
     assert.equal(existsSync(store.objectPath(third)), true, "a cache hit must republish a vanished object instead of reusing a dangling ref");
     assert.equal((await store.readData(third)).toString(), body);
   } finally { await file.close(); }
+}));
+
+test("a ref commit re-verifies an admitted object that disappeared instead of trusting the admission", async () => fixture(async (store) => {
+  const leaf = await store.put("data", "file");
+  const root = await store.putRecord("Root", { leaf });
+  const refs = await RefStore.open(store);
+  try {
+    await refs.commit(store, "agent/first", null, root); // admits root and its whole closure
+    await rm(store.objectPath(root));
+    // Admission is existence evidence for this instance only; once the object is gone, the next
+    // commit must verify it again and be rejected instead of returning an empty closure.
+    await assert.rejects(store.validateClosureForCommit(root), { code: "ENOENT" });
+    await assert.rejects(refs.commit(store, "agent/second", null, root), { code: "ENOENT" });
+    assert.equal(refs.head("agent/second"), null);
+  } finally { refs.close(); }
 }));
