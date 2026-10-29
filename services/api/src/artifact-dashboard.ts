@@ -278,7 +278,10 @@ function jsonRecordArray(parsed: unknown): Record<string, unknown>[] | undefined
   const records = parsed.filter(
     (entry): entry is Record<string, unknown> => typeof entry === "object" && entry !== null && !Array.isArray(entry),
   );
-  return records.length === parsed.length ? records : undefined;
+  if (records.length !== parsed.length) return undefined;
+  // Keys are the row/column mapping: an array of empty objects would become a table with no
+  // columns, so it must fall through to the JSON view like any other unmappable shape.
+  return records.some((record) => Object.keys(record).length > 0) ? records : undefined;
 }
 
 function recordArrayTable(records: Record<string, unknown>[], maxRows: number): {
