@@ -217,7 +217,6 @@ const DEFAULT_MAX_CHARS = 100_000;
 const DEFAULT_MAX_CELLS = 200;
 const FIGURE_TRUNCATION_BYTES = 5 * 1024 * 1024;
 const IFRAME_TRUNCATION_BYTES = 2 * 1024 * 1024;
-const STRUCTURE_ATOM_TRUNCATION = 8_000;
 
 const DATASET_TEXT_SUFFIXES = [".csv", ".tsv", ".json"] as const;
 type DatasetTextSubtype = (typeof DATASET_TEXT_SUFFIXES)[number];
@@ -497,7 +496,9 @@ export async function buildArtifactVersionPreview(
       const source = await readCasText(recorder, version.content.hash);
       const atomCount = countStructureAtoms(source);
       const charTruncated = source.length > maxChars;
-      const atomTruncated = atomCount > STRUCTURE_ATOM_TRUNCATION;
+      // Only bytes actually removed make the preview truncated. The atom budget limits what the
+      // structure viewer highlights (`ScientificArtifacts.tsx` slices atoms itself), not what this
+      // payload returns, so folding it into `truncated` claimed a cut that never happened.
       return {
         version,
         kind,
@@ -505,7 +506,7 @@ export async function buildArtifactVersionPreview(
         source: charTruncated ? source.slice(0, maxChars) : source,
         atomCount,
         totalChars: source.length,
-        truncated: charTruncated || atomTruncated,
+        truncated: charTruncated,
       };
     }
     case "report": {

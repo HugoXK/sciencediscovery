@@ -507,7 +507,6 @@ test("structure preview does not claim truncation when the whole source is retur
   assert.equal(payload.atomCount, 9_000);
   assert.equal(payload.source.length, pdb.length);
   assert.equal(payload.truncated, false);
-  assert.match((payload as { note?: string }).note ?? "", /8,000 atoms/);
 });
 
 test("structure preview reports truncation when maxChars cuts the source", async (context) => {
