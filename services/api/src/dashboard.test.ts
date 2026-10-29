@@ -349,6 +349,27 @@ test("a csv dataset preview strips the UTF-8 BOM from the first header cell", as
   assert.deepEqual(payload.rows[0], ["Alice", "1"]);
 });
 
+test("a csv dataset preview strips the BOM before a quoted header, so the quote still opens the cell", async (context) => {
+  const fixture = await createFixture(context);
+  // Excel's marker sits in front of the opening quote, not inside the cell: once
+  // the marker is gone the quote is back at the start of the record and must
+  // still open a field. Otherwise the header arrives as the literal `"name"`,
+  // quotes included, and the column disappears for name-based clients.
+  const vid = await seedArtifact(fixture, {
+    content: "\uFEFF\"name\",note\nAlice,1\n",
+    kind: "dataset",
+    logicalName: "bom-quoted.csv",
+    mediaType: "text/csv",
+  });
+  const payload = await buildArtifactVersionPreview(
+    fixture.store, fixture.recorder, fixture.session.id, vid,
+  );
+  if (payload.mode !== "dataset-table") assert.fail(`unexpected mode: ${payload.mode}`);
+  assert.deepEqual(payload.columns, ["name", "note"]);
+  assert.equal(payload.totalRows, 1);
+  assert.deepEqual(payload.rows[0], ["Alice", "1"]);
+});
+
 test("a tsv dataset preview strips the UTF-8 BOM from the first header cell", async (context) => {
   const fixture = await createFixture(context);
   const vid = await seedArtifact(fixture, {
