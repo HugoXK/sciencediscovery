@@ -319,3 +319,22 @@ test("unchanged workspace bytes are still reused without republishing", async (t
     assert.deepEqual(second, first);
   } finally { await file.close(); }
 }));
+
+test("a cache hit does not re-read the stored object on every call", async (t) => fixture(async (store, root) => {
+  const path = resolve(root, "verify-once");
+  await writeFile(path, "one object verification per store instance");
+  const verifications = t.mock.method(store, "verifyRef");
+  const file = await open(path, "r+");
+  try {
+    const first = await store.putWorkspaceFile(Buffer.from(path), file);
+    const second = await store.putWorkspaceFile(Buffer.from(path), file);
+    const third = await store.putWorkspaceFile(Buffer.from(path), file);
+    assert.deepEqual([second, third], [first, first]);
+    assert.equal(verifications.mock.callCount(), 1, "the stored object is verified once per store instance, not once per cache hit");
+    // The source file is still re-hashed on every hit: a same-size in-place rewrite must still republish.
+    const rewritten = "one object verification per store instancE";
+    await file.write(Buffer.from(rewritten), 0, rewritten.length, 0);
+    const fourth = await store.putWorkspaceFile(Buffer.from(path), file);
+    assert.notEqual(fourth.digest, first.digest, "cached object verification must not become the reuse criterion");
+  } finally { await file.close(); }
+}));
