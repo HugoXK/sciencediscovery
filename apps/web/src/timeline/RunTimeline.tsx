@@ -970,7 +970,7 @@ export function RunTimeline({
                   <summary>{t("timeline.details")}</summary>
                   <dl>
                     <dt>{t("timeline.action")}</dt><dd><code>{entry.request.action === "sandbox_network" ? t("permissions.sandboxNetwork") : entry.request.action}</code></dd>
-                    <dt>{t("timeline.resource")}</dt><dd><code>{entry.request.resource}</code></dd>
+                    <dt>{t("timeline.resource")}</dt><dd><code>{resourceLabel}</code></dd>
                     <dt>{t("timeline.requested")}</dt><dd>{new Date(entry.request.createdAt).toLocaleString(locale)}</dd>
                     {entry.request.decision ? <><dt>{t("timeline.decision")}</dt><dd>{entry.request.decision}</dd></> : null}
                     {entry.request.decidedAt ? <><dt>{t("timeline.decided")}</dt><dd>{new Date(entry.request.decidedAt).toLocaleString(locale)}</dd></> : null}
