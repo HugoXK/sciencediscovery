@@ -27,9 +27,11 @@ import {
 
 test("a turn with no approval path refuses the search instead of allowing it", async () => {
   // Unreachable for typed callers (the callback is required), reachable for a
-  // caller outside the type system. A search that cannot ask must not spend.
+  // caller outside the type system. A search that cannot ask must not spend,
+  // not even in a session whose approval mode allows everything: the gate
+  // decides, not the session mode.
   const result = await confirmEvolveSearch(
-    { approvalMode: "always_allow", sessionId: "session-without-approval" },
+    { sessionId: "session-without-approval" },
     { expansions: 2, howScored: "held-out accuracy" },
     "call-1",
   );
@@ -81,7 +83,6 @@ test("the gate asks with the call's identity and the search it is paying for", a
   const asked: EvolveConfirmationRequest[] = [];
   const result = await confirmEvolveSearch(
     {
-      approvalMode: "ask_for_dangerous",
       requestConfirmation: async (input) => {
         asked.push(input);
         return false;
