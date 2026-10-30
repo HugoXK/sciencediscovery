@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+import { randomUUID } from "node:crypto";
+
 /**
  * The budget gate in front of an evolution search.
  *
@@ -22,10 +24,10 @@
  *
  * 1. **Which grant the decision covers.** The permission runtime matches a
  *    standing grant by `action` + `resource` (`store.ts`'s `requestPermission`,
- *    `permissionMatcherResource` in `@sciencediscovery/governance`), never by
- *    the tool call id, which is only recorded on the authorization. A resource
- *    shared by the whole session therefore turns one "allow matching" click
- *    into a silent allow for every later search.
+ *    `permissionMatcherResource` in `@sciencediscovery/governance`); the tool
+ *    call id is only recorded on the authorization. A resource shared by the
+ *    whole session therefore turns one "allow matching" click into a silent
+ *    allow for every later search.
  * 2. **What happens when there is no way to ask.** Typed callers cannot omit
  *    the confirmation callback (it is required on `EvolveTurnContext`), but a
  *    caller outside the type system must still be refused rather than allowed.
@@ -44,7 +46,6 @@ export type RequestEvolveConfirmation = (input: EvolveConfirmationRequest) => Pr
 
 /** The slice of an evolve turn the gate needs. */
 export interface EvolveConfirmationContext {
-  approvalMode?: "always_allow" | "ask_for_dangerous";
   requestConfirmation?: RequestEvolveConfirmation;
   sessionId: string;
 }
@@ -53,9 +54,15 @@ export type EvolveConfirmationResult =
   | { confirmed: true }
   | { confirmed: false; refusedBecause: string };
 
-/** The grant key a confirmation is recorded under. */
+/**
+ * The grant key one search attempt is recorded under.
+ *
+ * Fresh for every attempt, including a retried tool call: "allow matching"
+ * covers the search the user was shown and nothing after it. The session id
+ * keeps a decision readable in the audit trail and keeps two sessions apart.
+ */
 export function evolveSearchResource(sessionId: string): string {
-  return `evolve-search:${sessionId}`;
+  return `evolve-search:${sessionId}:${randomUUID()}`;
 }
 
 /** The card text: what the search will do, and that it costs budget. */
@@ -74,13 +81,23 @@ export async function confirmEvolveSearch(
   proposal: { expansions: number; howScored: unknown },
   toolCallId?: string,
 ): Promise<EvolveConfirmationResult> {
-  const allowed = context.requestConfirmation
-    ? await context.requestConfirmation({
-        resource: evolveSearchResource(context.sessionId),
-        summary: evolveSearchSummary(proposal),
-        toolCallId,
-      })
-    : context.approvalMode !== "ask_for_dangerous";
+  const ask = context.requestConfirmation;
+  if (!ask) {
+    // A typed caller cannot get here: `EvolveTurnContext.requestConfirmation`
+    // is required, so a new construction site that forgets it is a compile
+    // error. This closes the same hole for a caller outside the type system —
+    // an untyped script, a stale build, a test double — because "no way to
+    // ask" must mean "no search", never "always_allow, so go ahead".
+    return {
+      confirmed: false,
+      refusedBecause: "confirmation unavailable: this turn has no approval path, so the evolution search was not started",
+    };
+  }
+  const allowed = await ask({
+    resource: evolveSearchResource(context.sessionId),
+    summary: evolveSearchSummary(proposal),
+    toolCallId,
+  });
   return allowed
     ? { confirmed: true }
     : { confirmed: false, refusedBecause: "the evolution search was not confirmed by the user" };

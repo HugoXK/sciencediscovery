@@ -200,6 +200,7 @@ import { createAgentPermissionRuntime } from "@sciencediscovery/governance";
 import type { EvolveRunProposal } from "@sciencediscovery/schema";
 import { startProposedRun, summariseRun } from "../evolution/proposal.js";
 import type { EvolutionStore } from "../evolution/store.js";
+import type { RequestEvolveConfirmation } from "../evolution/confirmation.js";
 import { createRequestExecutionContext } from "../agent-run/request-execution.js";
 import { createWorkspaceExecutionBindings } from "../agent-run/workspace-bindings.js";
 import { prepareSkillSandbox, skillPackageSetHash } from "../skill-sandbox.js";
@@ -576,8 +577,14 @@ export interface EvolveTurnContext {
    * the user decides. Every path that starts `create_evolve_run` must go
    * through this, because a search spends real budget (mutations + sandboxed
    * evaluations) and must never start without explicit user confirmation.
+   *
+   * Required, not optional: it used to be optional and the gate fell back to
+   * "the session allows everything, so start", which silence no one notices —
+   * a new evolve construction site that forgot it would spend budget with no
+   * card and no error. Now forgetting it is a compile error, and the gate
+   * itself refuses when it is missing at runtime (see `confirmEvolveSearch`).
    */
-  requestConfirmation?: (input: { resource: string; summary: string; toolCallId?: string }) => Promise<boolean>;
+  requestConfirmation: RequestEvolveConfirmation;
 }
 
 export function skillAuthoringCommandPrompt(content: string): string | undefined {
