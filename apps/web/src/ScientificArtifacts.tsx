@@ -204,10 +204,14 @@ export function ProvenanceView({ provenance, onNavigateArtifact, onNavigateCode 
 }
 
 export function CsvArtifactPreview({
+  clippedCells = 0,
+  clippedColumns,
   onOpen,
   ready,
   source,
 }: {
+  clippedCells?: number;
+  clippedColumns?: { total: number; shown: number };
   onOpen: () => void;
   ready: boolean;
   source: string;
@@ -219,6 +223,9 @@ export function CsvArtifactPreview({
       <strong>{t("csv.openWorkspace")}</strong>
       <small>{t("csv.openWorkspaceHint")}</small>
     </button>
+    {hasClippedPreview(clippedCells, clippedColumns)
+      ? <p className="dataset-table-meta"><ClippedPreviewText clippedCells={clippedCells} clippedColumns={clippedColumns} /></p>
+      : null}
     <details><summary>{t("csv.viewRaw")}</summary>{ready ? <SourcePreview source={source} /> : <p>{t("csv.loadingArtifact")}</p>}</details>
   </div>;
 }
@@ -237,6 +244,26 @@ export function isCsvWorkspaceReady({
   return detected && Boolean(source) && Boolean(versionId) && loadedVersionId === versionId;
 }
 
+/** Does a preview leave anything out that the reader must be told about? */
+export function hasClippedPreview(clippedCells = 0, clippedColumns?: { total: number; shown: number }): boolean {
+  return Boolean(clippedColumns && clippedColumns.total > clippedColumns.shown) || clippedCells > 0;
+}
+
+/**
+ * The clipped-preview sentences, shared by every reader that shows a bounded
+ * preview. One sentence per loss: the columns the width cap hid and the cells
+ * the cap left out are reported separately and never for the same loss twice.
+ */
+function ClippedPreviewText({ clippedCells = 0, clippedColumns }: { clippedCells?: number; clippedColumns?: { total: number; shown: number } }) {
+  const { t } = useLocale();
+  return <>
+    {clippedColumns && clippedColumns.total > clippedColumns.shown
+      ? t("artifact.tableClippedColumns", { shown: clippedColumns.shown, total: clippedColumns.total })
+      : ""}
+    {clippedCells > 0 ? t("artifact.tableClippedCells", { count: clippedCells }) : ""}
+  </>;
+}
+
 export function DatasetTable({ clippedCells = 0, clippedColumns, columns, rows, totalRows, truncated }: { clippedCells?: number; clippedColumns?: { total: number; shown: number }; columns: string[]; rows: string[][]; totalRows: number; truncated: boolean }) {
   const { t } = useLocale();
   // An empty grid plus "0 rows" is not usable feedback: say why
@@ -244,15 +271,12 @@ export function DatasetTable({ clippedCells = 0, clippedColumns, columns, rows, 
   if (!columns.length && !rows.length) {
     return <p className="artifact-empty">{t("artifact.tableEmpty")}</p>;
   }
-  const clippedColumnText = clippedColumns && clippedColumns.total > clippedColumns.shown
-    ? t("artifact.tableClippedColumns", { shown: clippedColumns.shown, total: clippedColumns.total })
-    : "";
   return <div className="dataset-table-wrapper">
     <table className="dataset-table">
       <thead><tr>{columns.map((col, i) => <th key={i}>{col}</th>)}</tr></thead>
       <tbody>{rows.map((row, ri) => <tr key={ri}>{row.map((cell, ci) => <td key={ci}>{cell}</td>)}</tr>)}</tbody>
     </table>
-    <p className="dataset-table-meta">{t(totalRows === 1 ? "artifact.tableRowOne" : "artifact.tableRows", { count: totalRows })}{truncated ? t("artifact.tableTruncated") : ""}{clippedColumnText}{clippedCells > 0 ? t("artifact.tableClippedCells", { count: clippedCells }) : ""}</p>
+    <p className="dataset-table-meta">{t(totalRows === 1 ? "artifact.tableRowOne" : "artifact.tableRows", { count: totalRows })}{truncated ? t("artifact.tableTruncated") : ""}<ClippedPreviewText clippedCells={clippedCells} clippedColumns={clippedColumns} /></p>
   </div>;
 }
 
@@ -874,6 +898,8 @@ export function ArtifactModal({
             : <iframe className="report-frame" src={contentUrl} title={artifact.logicalName} />
           : null}
         {artifact?.kind === "dataset" && csvDetection && !(structureFormat && source) ? <CsvArtifactPreview
+          clippedCells={datasetTable?.clippedCells ?? 0}
+          {...(datasetTable?.clippedColumns ? { clippedColumns: datasetTable.clippedColumns } : {})}
           onOpen={() => setCsvWindowOpen(true)}
           ready={csvWorkspaceReady}
           source={source}
