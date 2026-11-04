@@ -21,6 +21,7 @@ import { readFileSync } from "node:fs";
 import type { ArtifactVersionProvenance, MemoryGraphNode, ScientificArtifact, ScientificArtifactVersion, Session } from "@sciencediscovery/schema";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { act, create, type ReactTestRenderer } from "react-test-renderer";
 
 import type { ApiClient } from "../src/api.js";
 import { DetailModal } from "../src/DetailModal.js";
@@ -28,6 +29,7 @@ import { EvidenceModal } from "../src/EvidenceModal.js";
 import { findArtifactNodeInGraph, findCodeNodeInGraph } from "../src/MemoryGraphExplorer.js";
 import {
   ArtifactDownloadButton,
+  ArtifactModal,
   ArtifactVersionSource,
   CsvArtifactPreview,
   DatasetPreview,
@@ -608,4 +610,88 @@ test("findCodeNodeInGraph ignores non-Code nodes even if their extra happens to 
 
 test("findCodeNodeInGraph returns undefined when no Code node carries that runId", () => {
   assert.equal(findCodeNodeInGraph(CODE_NODES, "never-existed"), undefined);
+});
+
+test("a CSV reader sees the clipped-preview notice the dataset table shows", async () => {
+  // `#830` reports a clipped preview through `clippedColumns`/`clippedCells`, but
+  // the `.csv` branch renders `CsvArtifactPreview` and never `DatasetTable`, so
+  // those two props had no reachable reader. The CSV panel carries the same
+  // numbers and prints the same sentence once per loss.
+  const artifact: ScientificArtifact = {
+    createdAt: "2026-07-27T02:47:21.000Z",
+    createdInSessionId: "session-1",
+    createdInSessionTitle: "Analysis",
+    currentVersion: 1,
+    id: "artifact-1",
+    kind: "dataset",
+    logicalName: "wide.csv",
+    name: "wide.csv",
+    origin: "llm_declared",
+    projectId: "project-1",
+    sessionId: "session-1",
+    updatedAt: "2026-07-27T02:47:21.000Z",
+  };
+  const version: ScientificArtifactVersion = {
+    artifactId: artifact.id,
+    content: { hash: "b".repeat(64), size: 128 },
+    createdAt: artifact.createdAt,
+    executionRunIds: [],
+    id: "version-1",
+    inputArtifactVersionIds: [],
+    mediaType: "text/csv",
+    projectId: artifact.projectId,
+    sessionId: artifact.sessionId,
+    version: 1,
+  };
+  const columns = ["a", "b", ...Array.from({ length: 999 }, () => "")];
+  const preview = {
+    version,
+    kind: "dataset" as const,
+    mode: "dataset-table" as const,
+    mediaSubtype: "csv" as const,
+    columns,
+    rows: [columns.map(() => "")],
+    totalRows: 1,
+    truncated: false,
+    clippedCells: 3999,
+    clippedColumns: { shown: 1001, total: 200001 },
+  };
+  const client = {
+    listArtifacts: async () => [artifact],
+    listArtifactVersions: async () => [version],
+    listSessions: async () => [],
+    readArtifactVersion: async () => new Blob(["a,b\n1,2\n"], { type: "text/csv" }),
+    getArtifactProvenance: async (): Promise<ArtifactVersionProvenance> => ({
+      code: [], dependencies: [], environments: [], executionLog: [], messages: [], review: [], version,
+    }),
+    getArtifactVersionPreview: async () => preview,
+    getMemoryHealth: async () => ({ memoryGraph: "healthy" as const }),
+  } as unknown as ApiClient;
+  // The panel binds a window-level Escape handler; the test runner has no DOM,
+  // so give it a bare event target for the duration of the render.
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+  Object.defineProperty(globalThis, "window", { configurable: true, value: new EventTarget() });
+  let view: ReactTestRenderer;
+  try {
+    await act(async () => {
+      view = create(createElement(ArtifactModal, {
+      client,
+        logicalName: artifact.logicalName,
+        onClose: () => undefined,
+        onNavigateArtifact: () => undefined,
+        onError: () => undefined,
+        onPendingAnnotation: () => undefined,
+        sessionId: "session-1",
+      }));
+    });
+    const text = JSON.stringify(view!.toJSON());
+    assert.match(text, /showing 1001 of 200001 columns/);
+    assert.match(text, /3999 cells past the preview width are not shown/);
+    // One sentence per loss: the same 3,999 cells must not be named twice.
+    assert.equal((text.match(/3999 cells past the preview width are not shown/g) ?? []).length, 1);
+  } finally {
+    if (view!) await act(async () => view!.unmount());
+    if (previousWindow) Object.defineProperty(globalThis, "window", previousWindow);
+    else Reflect.deleteProperty(globalThis, "window");
+  }
 });
